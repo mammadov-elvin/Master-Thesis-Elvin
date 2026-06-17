@@ -1,0 +1,2199 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-04-27"
+---
+```{r}
+# =========================================================
+# CHUNK 1 — PACKAGES
+# =========================================================
+
+packages <- c(
+  "terra",
+  "sf",
+  "dplyr",
+  "ggplot2",
+  "geodata",
+  "lwgeom",
+  "tidyr",
+  "readxl",
+  "stringr",
+  "fixest",
+  "here", 
+  "geosphere", 
+  "modelsummary",
+  "ggrepel", 
+  "tinytable"
+)
+
+new_packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+
+if(length(new_packages))
+  install.packages(new_packages)
+
+invisible(lapply(packages, library, character.only = TRUE))
+
+
+```
+
+
+
+```{r}
+# =========================================================
+# CHUNK 2 — LOAD NIGHTTIME LIGHT FILES
+# =========================================================
+
+ntl_files <- list.files(
+  "Data/NIGHT LIGHT DATA/",
+  pattern = "AZE_NTL.*\\.tif$",
+  full.names = TRUE
+)
+
+ntl_stack <- rast(ntl_files)
+
+# Check files
+print(ntl_files)
+print(ntl_stack)
+```
+
+
+
+```{r}
+# =========================================================
+# CHUNK 3 — CLEAN NIGHTTIME LIGHT DATA
+# =========================================================
+
+# Negative values are invalid
+ntl_stack[ntl_stack < 0] <- NA
+
+# Maximum light across all years
+ntl_max <- max(ntl_stack, na.rm = TRUE)
+
+# Log-transform for better visualization
+ntl_max_log <- log1p(ntl_max)
+
+
+
+
+```
+
+
+
+```{r}
+# =========================================================
+# CHUNK 4 — LOAD AZERBAIJAN DISTRICT BOUNDARIES
+# =========================================================
+
+aze <- st_read(here("Data", "GADM41_AZE_SHP", "gadm41_AZE_2.shp"))
+aze_sf <- st_as_sf(aze)
+aze_sf <- st_make_valid(aze_sf)
+
+# Transform to metric CRS for maps and area calculations
+aze_plot <- st_transform(aze_sf, 32639)
+
+district_names <- aze_sf %>%
+  st_drop_geometry() %>%
+  select(NAME_1, NAME_2)
+
+# Bütün unikal adlar
+unique(district_names$NAME_2)
+
+# Say
+length(unique(district_names$NAME_2))
+
+
+```
+
+
+
+
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK 5 — MAP 1: REAL NIGHTTIME LIGHT INTENSITY MAP
+# =========================================================
+
+# This map shows actual light intensity, not clusters
+
+# =========================================================
+# Maximum NTL map (publication style)
+# =========================================================
+
+ntl_max_log_utm <- project(ntl_max_log, "EPSG:32639")
+
+pdf(
+  file = here::here(
+    "figures",
+    "max_ntl_intensity_2010_2023.pdf"
+  ),
+  width = 8,
+  height = 6
+)
+
+plot(
+  ntl_max_log_utm,
+  col = hcl.colors(150, "Inferno"),
+  axes = FALSE,
+  box = FALSE,
+  legend.args = list(
+    text = "log(NTL + 1)",
+    side = 4,
+    line = 2
+  ),
+  main = "Nighttime Lights as a Proxy for Economic Activity (2010–2023)"
+)
+
+plot(
+  st_geometry(aze_plot),
+  add = TRUE,
+  border = "grey20",
+  lwd = 0.4
+)
+
+dev.off()
+```
+
+```{r}
+# =========================================================
+# CHUNK 5B — RECREATE ZERO-FILLED NTL STACK
+# =========================================================
+
+# Replace missing values with 0
+ntl_stack_zero <- subst(
+  ntl_stack,
+  NA,
+  0
+)
+
+# Check
+ntl_stack_zero
+```
+
+
+```{r}
+# CHUNK 6 — PERSISTENTLY LIT PIXELS
+
+thr <- 1
+min_years <- 3
+
+lit_count <- app(
+  ntl_stack_zero > thr,
+  sum
+)
+
+ever_lit <- lit_count >= min_years
+
+pdf(
+  file = here::here(
+    "figures",
+    "persistent_lit_pixels.pdf"
+  ),
+  width = 8,
+  height = 6
+)
+
+plot(
+  ever_lit,
+  main = paste0(
+    "Pixels with NTL > ", thr,
+    " in at least ", min_years, " years"
+  ),
+  axes = FALSE,
+  box = FALSE,
+  col = c("grey95", "darkorange")
+)
+
+plot(
+  st_geometry(aze_plot),
+  add = TRUE,
+  border = "grey20",
+  lwd = 0.4
+)
+
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK 13 — SUMMARY TABLE
+# =========================================================
+
+#summary(cities_final$area_km2)
+
+#cities_final %>%st_drop_geometry() %>% arrange(desc(area_km2)) %>% select(NAME_1, NAME_2, area_km2, compactness) %>% head(20)
+```
+
+```{r}
+# =========================================================
+# CHUNK 14 — SAVE OUTPUTS
+# =========================================================
+
+#saveRDS( cities_final, "Data/cities_final_admin_constrained.rds")
+
+#st_write( cities_final, "Data/cities_final_admin_constrained.gpkg",delete_dsn = TRUE)
+```
+
+```{r}
+# =========================================================
+# CHUNK 15 — PREPARE FIXED PIXEL GRID
+# =========================================================
+
+
+years <- 2010:2020
+
+stopifnot(nlyr(ntl_stack) == length(years))
+
+names(ntl_stack) <- paste0("ntl_", years)
+
+names(ntl_stack)
+```
+
+
+
+```{r}
+# =========================================================
+# CHUNK 16 — DEFINE EVER-LIT PIXELS, BUT CLEANER VERSION
+# =========================================================
+
+# convert  NA to 0 
+ntl_stack_zero <- subst(ntl_stack, NA, 0)
+
+# Count how many years each pixel has NTL > 1
+lit_count <- app(
+  ntl_stack_zero > 1,
+  sum
+)
+
+# Keep pixels that have been illuminated for at least 3 years
+ever_lit_panel <- lit_count >= 3
+
+plot(ever_lit_panel)
+
+cat(
+  "Kept stable-lit pixels:",
+  global(ever_lit_panel, "sum", na.rm = TRUE)[1, 1],
+  "\n"
+)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 17 — CREATE PIXEL GRID ONLY FOR EVER-LIT PIXELS
+# =========================================================
+
+template <- ntl_stack_zero[[1]]
+
+# All cell IDs
+all_cells <- 1:ncell(template)
+
+# Extract ever-lit value for all cells
+ever_lit_values <- values(ever_lit_panel)
+
+# Keep only cells where ever_lit_panel == TRUE
+keep_cells <- all_cells[ever_lit_values == 1]
+
+cat("Total raster pixels:", length(all_cells), "\n")
+cat("Ever-lit pixels kept:", length(keep_cells), "\n")
+
+# Coordinates of kept pixels
+xy <- xyFromCell(template, keep_cells)
+
+pixels_df <- data.frame(
+  pixel_id = keep_cells,
+  x = xy[, 1],
+  y = xy[, 2]
+)
+
+head(pixels_df)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 18 — CONVERT PIXELS TO SF POINTS
+# =========================================================
+
+pixels_sf <- st_as_sf(
+  pixels_df,
+  coords = c("x", "y"),
+  crs = crs(template),
+  remove = FALSE
+)
+
+head(pixels_sf)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 19 — ASSIGN ADMINISTRATIVE DISTRICT TO EACH PIXEL
+# =========================================================
+
+# Use Azerbaijan district boundaries from previous step
+aze_for_join <- st_transform(aze_sf, st_crs(pixels_sf))
+
+pixels_sf <- st_join(
+  pixels_sf,
+  aze_for_join %>% select(NAME_1, NAME_2),
+  left = FALSE
+)
+
+cat("Ever-lit pixels inside Azerbaijan districts:", nrow(pixels_sf), "\n")
+
+head(pixels_sf)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 20 — EXTRACT NTL VALUES FOR EACH PIXEL AND YEAR
+# =========================================================
+
+ntl_values <- terra::extract(
+  ntl_stack_zero,
+  vect(pixels_sf)
+)
+
+# Remove terra ID column
+ntl_values <- ntl_values %>%
+  select(-ID)
+
+head(ntl_values)
+
+# Check missing values
+colSums(is.na(ntl_values))
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 21 — CREATE WIDE PANEL DATA
+# =========================================================
+
+panel_wide <- bind_cols(
+  pixels_sf %>%
+    st_drop_geometry() %>%
+    select(pixel_id, x, y, NAME_1, NAME_2),
+  ntl_values
+)
+
+head(panel_wide)
+dim(panel_wide)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 22 — CONVERT TO LONG PIXEL-YEAR PANEL
+# =========================================================
+
+panel_long <- panel_wide %>%
+  pivot_longer(
+    cols = starts_with("ntl_"),
+    names_to = "year",
+    values_to = "ntl"
+  ) %>%
+  mutate(
+    year = as.numeric(gsub("ntl_", "", year)),
+    ntl = ifelse(is.na(ntl), 0, ntl),
+    log_ntl = log1p(ntl)
+  ) %>%
+  arrange(pixel_id, year)
+
+head(panel_long)
+dim(panel_long)
+
+```
+
+```{r}
+# =========================================================
+# CHUNK 23 — PANEL CHECKS
+# =========================================================
+
+# Observation count
+cat("Panel observations:", nrow(panel_long), "\n")
+
+# Number of unique pixels
+cat("Unique pixels:", length(unique(panel_long$pixel_id)), "\n")
+
+# Years
+table(panel_long$year)
+
+# Districts
+panel_long %>%
+  filter(year == 2023) %>%
+  count(NAME_1, NAME_2, sort = TRUE) %>%
+  head(20)
+
+# NTL summary
+summary(panel_long$ntl)
+summary(panel_long$log_ntl)
+  
+ # =========================================================
+# CHUNK 23b — CLEAN DISTRICT NAMES (FINAL)
+# =========================================================
+
+panel_long <- panel_long %>%
+  mutate(
+    NAME_2 = case_when(
+
+      # city → district
+      NAME_2 == "Lənkəran City" ~ "Lənkəran",
+      NAME_2 == "Yevlax City" ~ "Yevlax",
+      NAME_2 == "Şəki City" ~ "Şəki",
+
+      # Old city names
+      NAME_2 == "Xanlar" ~ "Göygöl",
+      NAME_2 == "Əli Bayramlı" ~ "Şirvan",
+      NAME_2 == "Dəvəçi" ~ "Şabran",
+
+      # transliterasiya
+      NAME_2 == "Xizı" ~ "Xızı",
+      NAME_2 == "Khankendi (Nagorno-Karabakh)" ~ "Xankəndi",
+      NAME_2 == "Lachin" ~ "Laçın",
+      NAME_2 == "Qubadli" ~ "Qubadlı",
+
+      # Şuşa city + rayon
+      NAME_2 %in% c(
+        "Şuşa (CIty) (Nagorno-Karabakh)",
+        "Şuşa (Rayon) (Nagorno-Karabakh)"
+      ) ~ "Şuşa",
+
+      # Ağdərə
+      NAME_2 %in% c(
+        "Kəlbəcər (Nagorno-Karabakh)",
+        "Tərtər (Nagorno-Karabakh)"
+      ) ~ "Ağdərə",
+
+      TRUE ~ NAME_2
+    ),
+
+    # Remove all remaining "Nagorno-Karabakh" text
+    NAME_2 = gsub(
+      " \\(Nagorno-Karabakh\\)",
+      "",
+      NAME_2
+    )
+  )
+
+
+
+sort(unique(panel_long$NAME_2))
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 23B — ADD ALTERNATIVE LOG VARIABLES
+# =========================================================
+
+panel_long <- panel_long %>%
+  mutate(
+    # Main specification
+    log_ntl = log1p(ntl),
+    
+    # Robustness: small constant as in zero-light literature
+    ntl_eps = ifelse(ntl == 0, 0.01, ntl),
+    log_ntl_eps = log(ntl_eps)
+  )
+
+summary(panel_long$log_ntl)
+summary(panel_long$log_ntl_eps)
+```
+
+```{r}
+# =========================================================
+# CHUNK 24 — SAVE PANEL DATA
+# =========================================================
+
+saveRDS(
+  panel_long,
+  here::here(
+    "data",
+    "clean",
+    "pixel_year_panel_ever_lit_2010_2023.rds"
+  )
+)
+
+cat(
+  "Saved:",
+  here::here(
+    "data",
+    "clean",
+    "pixel_year_panel_ever_lit_2010_2023.rds"
+  ),
+  "\n"
+)
+```
+
+```{r}
+# =========================================================
+# CHUNK 25 — LOAD ROAD DATA
+# =========================================================
+
+
+
+roads <- st_read(
+  here::here(
+    "Data",
+    "Road Data",
+    "hotosm_aze_roads_lines_shp.shp"
+  )
+)
+roads <- st_make_valid(roads)
+
+names(roads)
+head(roads)
+```
+```{r}
+# =========================================================
+# CHUNK 26 — CHECK ROAD TYPES
+# =========================================================
+
+roads %>%
+  st_drop_geometry() %>%
+  count(highway, sort = TRUE)
+```
+
+```{r}
+# =========================================================
+# CHUNK 27 — GROUP ROAD TYPES
+# =========================================================
+
+roads <- roads %>%
+  mutate(
+    road_group = case_when(
+
+      # Main national highways
+      highway %in% c(
+        "motorway",
+        "trunk",
+        "primary"
+      ) ~ "major",
+
+      # Important regional roads
+      highway %in% c(
+        "secondary",
+        "tertiary"
+      ) ~ "secondary",
+
+      # Local roads
+      highway %in% c(
+        "residential",
+        "living_street",
+        "service",
+        "unclassified"
+      ) ~ "local",
+
+      # Non-road paths
+      highway %in% c(
+        "track",
+        "path",
+        "footway"
+      ) ~ "minor_nonroad",
+
+      TRUE ~ "other"
+    )
+  )
+
+roads %>%
+  st_drop_geometry() %>%
+  count(road_group, sort = TRUE)
+```
+```{r}
+# =========================================================
+# CHUNK 28 — LOAD PANEL AND CREATE PIXEL POINTS
+# =========================================================
+
+panel_long <- readRDS(
+  here::here(
+    "Data", "Clean",
+    "pixel_year_panel_ever_lit_2010_2023.rds"
+  )
+)
+pixels_unique <- panel_long %>%
+  distinct(pixel_id, x, y, NAME_1, NAME_2)
+
+pixels_sf <- st_as_sf(
+  pixels_unique,
+  coords = c("x", "y"),
+  crs = 4326,
+  remove = FALSE
+)
+```
+
+```{r}
+# =========================================================
+# CHUNK 29 — TRANSFORM TO METRIC CRS
+# =========================================================
+
+pixels_m <- st_transform(pixels_sf, 32639)
+roads_m <- st_transform(roads, 32639)
+```
+
+
+
+```{r}
+# =========================================================
+# CHUNK 30 — DISTANCE TO NEAREST MAJOR AND SECONDARY ROAD
+# =========================================================
+
+major_roads <- roads_m %>%
+  filter(road_group == "major")
+
+secondary_roads <- roads_m %>%
+  filter(road_group == "secondary")
+
+# distance in meters
+pixels_m$dist_major_road_m <- as.numeric(
+  st_distance(pixels_m, st_union(major_roads))
+)
+
+pixels_m$dist_secondary_road_m <- as.numeric(
+  st_distance(pixels_m, st_union(secondary_roads))
+)
+
+road_distance_vars <- pixels_m %>%
+  st_drop_geometry() %>%
+  select(
+    pixel_id,
+    dist_major_road_m,
+    dist_secondary_road_m
+  )
+
+summary(road_distance_vars)
+```
+
+
+
+```{r}
+# =========================================================
+# CHUNK 31 — MERGE ROAD DISTANCES TO PANEL
+# =========================================================
+
+panel_long <- panel_long %>%
+  left_join(road_distance_vars, by = "pixel_id")
+
+summary(panel_long$dist_major_road_m)
+summary(panel_long$dist_secondary_road_m)
+```
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK 31B — LOG ROAD DISTANCES
+# =========================================================
+
+panel_long <- panel_long %>%
+  mutate(
+    log_dist_major = log1p(dist_major_road_m),
+    log_dist_secondary = log1p(dist_secondary_road_m)
+  )
+
+summary(panel_long$log_dist_major)
+summary(panel_long$log_dist_secondary)
+```
+
+
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK 32 — SAVE PANEL WITH ROAD DISTANCES
+# =========================================================
+
+saveRDS(
+  panel_long,
+  here::here(
+    "Data",
+    "Clean",
+    "pixel_year_panel_ntl_roads_2010_2023.rds"
+  )
+)
+
+
+
+cat(
+  "Saved:",
+  here::here(
+    "Data",
+    "Clean",
+    "pixel_year_panel_ntl_roads_2010_2023.rds"
+  ),
+  "\n"
+)
+```
+```{r}
+
+pdf(
+  file = here::here(
+    "Figures",
+    "nighttime_lights_major_roads_2010_2020.pdf"
+  ),
+  width = 8,
+  height = 6
+)
+
+# =========================================================
+# NIGHTTIME LIGHTS AND ROAD NETWORK
+# =========================================================
+
+aze_outline <- aze_plot %>%
+  summarise()
+
+par(
+  bg = "white",
+  mar = c(1, 1, 3, 4)
+)
+
+plot(
+  ntl_max_log_utm,
+  col = hcl.colors(200, "Inferno"),
+  axes = FALSE,
+  box = FALSE,
+  plg = list(
+    title = "Log  Lights",
+    cex = 0.9
+  ),
+  main = "Nighttime Lights and Road Network (2010–2020)"
+)
+
+plot(
+  st_geometry(secondary_roads),
+  add = TRUE,
+  col = adjustcolor("grey70", alpha.f = 0.5),
+  lwd = 0.3
+)
+
+plot(
+  st_geometry(major_roads),
+  add = TRUE,
+  col = "#2C7FB8",
+  lwd = 1
+)
+
+plot(
+  st_geometry(aze_outline),
+  add = TRUE,
+  border = "black",
+  lwd = 0.5
+)
+
+legend(
+  "topright",
+  legend = c(
+    "Major roads",
+    "Secondary roads"
+  ),
+  col = c(
+    "#2C7FB8",
+    "grey70"
+  ),
+  lwd = c(
+    1.4,
+    0.3
+  ),
+  bty = "n",
+  cex = 0.8
+)
+
+dev.off()
+```
+
+
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK 33 — LOAD OIL DATA
+# =========================================================
+
+excel_sheets(
+  here::here(
+    "Data",
+    "CMO-Historical-Data-Annual.xlsx"
+  )
+)
+
+oil_raw <- readxl::read_excel(
+  here::here(
+    "Data",
+    "CMO-Historical-Data-Annual.xlsx"
+  ),
+  sheet = "Annual Prices (Nominal)",
+  skip = 6
+)
+
+dim(oil_raw)
+names(oil_raw)
+head(oil_raw)
+
+```
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK 34 — CLEAN BRENT OIL PRICE DATA
+# =========================================================
+
+oil <- oil_raw %>%
+  select(
+    year = ...1,
+    oil_price_brent = `Crude oil, Brent`
+  ) %>%
+  mutate(
+    year = as.numeric(year),
+    oil_price_brent = as.numeric(oil_price_brent)
+  ) %>%
+  filter(
+    year >= 2010,
+    year <= 2023
+  )
+
+oil
+```
+
+```{r}
+# =========================================================
+# CHUNK 35 — MERGE OIL PRICE TO PANEL
+# =========================================================
+
+panel_long <- readRDS(
+  here::here(
+    "Data", "Clean",
+    "pixel_year_panel_ntl_roads_2010_2023.rds"
+  )
+)
+panel_long <- panel_long %>%
+  left_join(oil, by = "year")
+
+summary(panel_long$oil_price_brent)
+
+table(is.na(panel_long$oil_price_brent))
+
+saveRDS(
+  panel_long,
+  here::here(
+    "Data",
+    "Clean",
+    "pixel_year_panel_ntl_roads_oil_2010_2023.rds"
+  )
+)
+```
+
+
+
+
+```{r}
+# CHUNK 36 — MERGE Investment  TO PANEL
+
+
+inv_raw <- read_excel(
+  here("Data", "əsas kapitala yönəldilmiş investisiyalar.xls"),
+  sheet = "2002-2023",
+  skip = 4
+)
+
+# Change the firsty column
+names(inv_raw)[1] <- "name_raw"
+
+# chechkj
+head(inv_raw)
+print(names(inv_raw))
+
+# --- 2. clean ---
+inv_clean <- inv_raw %>%
+  filter(!is.na(name_raw)) %>%
+  # "o cümlədən" remove
+  filter(!str_detect(name_raw, "o cümlədən")) %>%
+  # economic regions remove (aqreqat regionlar)
+  filter(!str_detect(name_raw, "iqtisadi rayonu")) %>%
+  # Naxçıvan Muxtar Respublikasını remoive (aqreqat)
+  filter(!str_detect(name_raw, "Muxtar")) %>%
+  mutate(
+    name_clean = str_trim(name_raw),
+# Convert all spaces and newlines to a single space
+name_clean = str_replace_all(name_clean, "\\s+", " "),
+    # "şəhəri" remove
+    name_clean = str_replace(name_clean, "\\s*şəhəri\\s*$", ""),
+    # "rayonu" remove
+    name_clean = str_replace(name_clean, "\\s*rayonu\\s*$", ""),
+    # clean the spaceə
+    name_clean = str_trim(name_clean)
+  )
+
+# check — clean names
+print(inv_clean$name_clean)
+cat("\nTotal number of districts/cities:", nrow(inv_clean), "\n")
+
+
+
+
+
+
+```
+```{r}
+# --- 2. WIDE → LONG ---
+inv_long <- inv_clean %>%
+  select(-name_raw) %>%
+  mutate(across(-name_clean, as.character)) %>%  
+  pivot_longer(
+    cols = -name_clean,
+    names_to = "year",
+    values_to = "investment"
+  ) %>%
+  mutate(
+    year = as.numeric(year),
+    investment = as.numeric(investment)
+  ) %>%
+  filter(!is.na(year)) %>%
+  rename(NAME_2 = name_clean)
+
+head(inv_long)
+
+# --- 3. Only 2010-2023 ---
+inv_2010 <- inv_long %>%
+  filter(year >= 2010 & year <= 2020)
+
+
+```
+
+
+```{r}
+# =========================================================
+# INVESTMENT-i PANEL_LONG-A MERGE
+# =========================================================
+
+
+# --- 1. PANEL_LONG  ---
+panel_long <- readRDS(here("Data", "Clean", "pixel_year_panel_ntl_roads_oil_2010_2023.rds"))
+
+# Remove old duplicate columns (if any)
+panel_long <- panel_long %>%
+  select(-any_of(c("oil_price_brent.x", "oil_price_brent.y",
+                    "dist_major_road_m.x", "dist_major_road_m.y",
+                    "dist_secondary_road_m.x", "dist_secondary_road_m.y")))
+
+# --- 2. CHECK FOR INCONSISTENT NAMES ---
+panel_names <- unique(panel_long$NAME_2)
+inv_names   <- unique(inv_2010$NAME_2)
+
+cat("===========================================\n")
+cat("\nIn panel, but not in Excel:\n")
+print(setdiff(panel_names, inv_names))
+
+cat("\nIn Excel, but not in panel:\n")
+print(setdiff(inv_names, panel_names))
+cat("===========================================\n")
+
+# --- 3. MERGE ---
+panel_long <- panel_long %>%
+  left_join(inv_2010, by = c("NAME_2", "year"))
+
+# --- 4. LOG INVESTMENT ---
+panel_long <- panel_long %>%
+  mutate(log_investment = log(investment + 1))
+
+# --- 5. Check ---
+cat("\nNA investment count:", sum(is.na(panel_long$investment)), "\n")
+cat("Total observations:", nrow(panel_long), "\n")
+cat("Districts with investment data:", 
+    length(unique(panel_long$NAME_2[!is.na(panel_long$investment)])), "\n")
+
+summary(panel_long$investment)
+summary(panel_long$log_investment)
+
+# --- 6. SAVE ---
+saveRDS(panel_long, here("Data", "Clean",  "panel_with_investment.rds"))
+cat("\n✅ T\n")
+
+
+```
+
+
+```{r}
+# Nakhchivan districts
+nakhchivan_districts <- c("Naxçıvan", "Babək", "Culfa", 
+                          "Ordubad", "Sədərək", 
+                          "Şahbuz", "Şərur")
+
+# Before removing
+cat("Observations before removal:", nrow(panel_long), "\n")
+cat("NA investment:", sum(is.na(panel_long$investment)), "\n")
+
+# REMOVE
+panel_long <- panel_long %>%
+  filter(!(NAME_2 %in% nakhchivan_districts))
+
+# After removing
+cat("\nObservations after removal:", nrow(panel_long), "obs\n")
+cat("NA investment:", sum(is.na(panel_long$investment)), "\n")
+cat("Number of districts:", length(unique(panel_long$NAME_2)), "\n")
+
+# Save
+
+
+cat("\nNakhchivan districts removed successfully.\n")
+
+panel_long %>%
+  filter(is.na(investment)) %>%
+  count(NAME_2, sort = TRUE) %>%
+  print(n = 50)
+```
+```{r}
+
+# Occupied territories during 1992-2020
+karabakh_districts <- c("Ağdərə", "Şuşa", "Xankəndi", "Xocalı", 
+                         "Xocavənd", "Kəlbəcər", "Laçın", 
+                         "Qubadlı", "Zəngilan", "Cəbrayıl",
+                         "Ağdam", "Füzuli")
+
+# Before removal
+cat("Before removal:", nrow(panel_long), "obs\n")
+cat("NA investment:", sum(is.na(panel_long$investment)), "\n")
+
+# Remove Karabakh districts AND years 2021-2023
+panel_long <- panel_long %>%
+  filter(!(NAME_2 %in% karabakh_districts)) %>%
+  filter(year <= 2020)
+
+# After removal
+cat("\nAfter removal:", nrow(panel_long), "obs\n")
+cat("NA investment:", sum(is.na(panel_long$investment)), "\n")
+cat("Districts:", length(unique(panel_long$NAME_2)), "\n")
+cat("Years:", paste(sort(unique(panel_long$year)), collapse=", "), "\n")
+
+# Save
+
+cat("\nKarabakh districts and years 2021-2023 removed successfully.\n")
+
+
+saveRDS(panel_long, here("Data", "Clean", "panel_final.rds"))
+
+```
+
+```{r}
+# =========================================================
+# CHUNK 40E — FIX DISTRICT CENTROIDS AFTER NAME CLEANING
+# =========================================================
+
+
+
+aze_clean <- aze %>%
+  mutate(
+    NAME_2 = case_when(
+      NAME_2 == "Lənkəran City" ~ "Lənkəran",
+      NAME_2 == "Yevlax City" ~ "Yevlax",
+      NAME_2 == "Şəki City" ~ "Şəki",
+
+      NAME_2 == "Xanlar" ~ "Göygöl",
+      NAME_2 == "Əli Bayramlı" ~ "Şirvan",
+      NAME_2 == "Dəvəçi" ~ "Şabran",
+
+      NAME_2 == "Xizı" ~ "Xızı",
+      NAME_2 == "Lachin" ~ "Laçın",
+      NAME_2 == "Qubadli" ~ "Qubadlı",
+      NAME_2 == "Khankendi (Nagorno-Karabakh)" ~ "Xankəndi",
+
+      NAME_2 %in% c(
+        "Şuşa (CIty) (Nagorno-Karabakh)",
+        "Şuşa (Rayon) (Nagorno-Karabakh)"
+      ) ~ "Şuşa",
+
+      NAME_2 %in% c(
+        "Kəlbəcər (Nagorno-Karabakh)",
+        "Tərtər (Nagorno-Karabakh)"
+      ) ~ "Ağdərə",
+
+      TRUE ~ NAME_2
+    ),
+    NAME_2 = gsub(" \\(Nagorno-Karabakh\\)", "", NAME_2)
+  ) %>%
+  group_by(NAME_2) %>%
+  summarise(
+    geometry = st_union(geometry),
+    .groups = "drop"
+  ) %>%
+  st_make_valid()
+
+district_centroids_clean <- st_point_on_surface(aze_clean)
+
+coords_clean <- st_coordinates(district_centroids_clean)
+
+district_centroids_df <- district_centroids_clean %>%
+  st_drop_geometry() %>%
+  mutate(
+    district_x = coords_clean[, 1],
+    district_y = coords_clean[, 2]
+  ) %>%
+  select(NAME_2, district_x, district_y)
+
+#district_panel <- district_panel %>%
+  #select(-any_of(c("x", "y"))) %>%
+ # left_join(
+  #  district_centroids_df,
+ #   by = "NAME_2"
+ # )
+
+#district_panel %>%
+  #filter(is.na(x) | is.na(y)) %>%
+  #distinct(NAME_2)
+
+
+panel_long <- panel_long %>%
+  select(
+    -any_of(c(
+      "NAME_2.x",
+      "NAME_2.y",
+      "NAME_2.x.x",
+      "NAME_2.y.y",
+      "x_centroid",
+      "y_centroid",
+      "district_x",
+      "district_y"
+    ))
+  ) %>%
+  left_join(
+    district_centroids_df,
+    by = "NAME_2"
+  )
+
+# Check
+panel_long %>%
+  select(pixel_id, NAME_2, x, y, district_x, district_y) %>%
+  head()
+
+panel_long %>%
+  filter(is.na(district_x) | is.na(district_y)) %>%
+  distinct(NAME_2)
+
+
+district_panel <- panel_long %>%
+  group_by(NAME_2, year) %>%
+  summarise(
+    investment = first(investment),
+    oil_price = first(oil_price_brent),
+    district_x = first(district_x),
+    district_y = first(district_y),
+    .groups = "drop"
+  )
+
+head(district_panel)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK — CHECK DISTRICT CENTROIDS (UPDATED)
+# =========================================================
+
+# Check if any district has missing centroid coordinates
+panel_long %>%
+  filter(
+    is.na(district_x) |
+    is.na(district_y)
+  ) %>%
+  distinct(NAME_2)
+
+# Check if each district has only one centroid pair
+panel_long %>%
+  distinct(
+    NAME_2,
+    district_x,
+    district_y
+  ) %>%
+  count(NAME_2) %>%
+  filter(n > 1)
+
+# Create district point layer
+district_points <- panel_long %>%
+
+  distinct(
+    NAME_2,
+    district_x,
+    district_y
+  ) %>%
+
+  st_as_sf(
+    coords = c(
+      "district_x",
+      "district_y"
+    ),
+    crs = 4326,
+    remove = FALSE
+  )
+
+# Visual check
+ggplot() +
+
+geom_sf(
+data = aze_clean,
+fill = "white",
+color = "grey70",
+linewidth = 0.2
+)+
+
+geom_sf(
+data = district_points,
+color = "red",
+size = 1.5
+)+
+
+theme_void()+
+
+labs(
+title =
+"District Centroid Check"
+)
+```
+
+
+
+```{r}
+# =========================================================
+# CHUNK 41 — DISTANCE TO BAKU (DISTRICT CENTROIDS)
+# =========================================================
+
+
+# Baku coordinates
+# longitude, latitude
+baku <- c(
+  49.8671,
+  40.4093
+)
+
+district_panel <- district_panel %>%
+  mutate(
+
+    dist_baku_km =
+
+      geosphere::distHaversine(
+
+        cbind(
+          district_x,
+          district_y
+        ),
+
+        baku
+
+      ) / 1000,
+
+    log_dist_baku =
+
+      log1p(
+        dist_baku_km
+      )
+
+  )
+
+summary(
+  district_panel$dist_baku_km
+)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 42 — CREATE OIL × DISTANCE INSTRUMENT for cities
+# =========================================================
+
+district_panel <- district_panel %>%
+  mutate(
+
+    # Instrument
+    oil_x_dist_baku =
+
+      oil_price *
+      dist_baku_km,
+
+    oil_x_log_dist_baku =
+
+      oil_price *
+      log_dist_baku,
+
+    # Outcome transform
+    log_investment =
+
+      log1p(
+        investment
+      )
+
+  )
+
+# Check
+district_panel %>%
+
+select(
+
+NAME_2,
+year,
+
+oil_price,
+
+dist_baku_km,
+
+oil_x_dist_baku,
+
+oil_x_log_dist_baku,
+
+investment,
+
+log_investment
+
+) %>%
+
+head()
+
+
+
+```
+
+
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK — PIXEL DISTANCE TO BAKU
+# =========================================================
+
+
+baku <- c(
+  49.8671,
+  40.4093
+)
+
+panel_long <- panel_long %>%
+  mutate(
+
+    dist_baku_km =
+
+      geosphere::distHaversine(
+
+        cbind(
+          x,
+          y
+        ),
+
+        baku
+
+      ) / 1000,
+
+    log_dist_baku =
+
+      log1p(
+        dist_baku_km
+      )
+
+  )
+
+summary(
+panel_long$dist_baku_km
+)
+```
+```{r}
+#Decs Statistics
+desc_data <- panel_long %>%
+  select(
+    `NTL` = ntl,
+    `Log NTL` = log_ntl_eps,
+    `Brent oil price` = oil_price_brent,
+    `Distance to Baku (km)` = dist_baku_km,
+    `Distance to major road (m)` = dist_major_road_m,
+    `Distance to secondary road (m)` = dist_secondary_road_m
+  )
+
+# Save clean LaTeX table
+dir.create(
+  here("Figures"),
+  showWarnings = FALSE
+)
+
+datasummary(
+
+All(desc_data) ~
+(
+N +
+Mean +
+SD +
+Min +
+Median +
+Max
+),
+
+data = desc_data,
+
+fmt = 1,
+
+output =
+here(
+"Figures",
+"descriptive_statistics.tex"
+)
+
+)
+
+
+
+
+
+
+desc_district <- district_panel %>%
+  select(
+
+    `Total fixed capital investment` =
+      investment,
+
+    `Log investment` =
+      log_investment,
+
+    `Brent oil price` =
+      oil_price,
+
+    `Distance to Baku (km)` =
+      dist_baku_km,
+
+    `Oil × log distance to Baku` =
+      oil_x_log_dist_baku
+
+  )
+
+# Create folder
+dir.create(
+  here("Figures"),
+  showWarnings = FALSE
+)
+
+# Export LaTeX table
+datasummary(
+
+All(desc_district)
+~
+(
+N +
+Mean +
+SD +
+Min +
+Median +
+Max
+),
+
+data =
+desc_district,
+
+fmt = 1,
+
+output =
+here(
+"Figures",
+"district_descriptive_statistics.tex"
+)
+
+)
+```
+
+
+```{r} 
+rf_main <- feols(
+
+log_ntl_eps ~
+
+oil_price_brent:
+log_dist_baku
+
+|
+
+pixel_id
++
+year,
+
+data =
+panel_long
+
+)
+
+summary(
+rf_main,
+cluster=
+~NAME_2
+)
+```
+
+```{r}
+rf_roads <- feols(
+
+log_ntl_eps ~
+
+oil_price_brent:
+log_dist_baku
+
++
+log_dist_major
++
+log_dist_secondary
+
+|
+
+NAME_2
++
+year,
+
+data =
+panel_long
+
+)
+
+summary(
+rf_roads,
+cluster=
+~NAME_2
+)
+```
+
+
+```{r}
+fs <- feols(
+
+log_investment ~
+
+oil_x_log_dist_baku
+
+|
+
+NAME_2
++
+year,
+
+data=
+district_panel
+
+)
+
+summary(
+fs,
+cluster=
+~NAME_2
+)
+```
+
+```{r}
+rf_no_baku <- feols(
+
+log_ntl_eps ~
+
+oil_price_brent
+
+|
+
+pixel_id,
+
+data=
+panel_long
+
+)
+
+summary(
+rf_no_baku,
+cluster=~NAME_2
+)
+```
+```{r}
+rf_compare <- feols(
+
+log_ntl_eps ~
+
+oil_price_brent
++
+oil_price_brent:log_dist_baku
+
+|
+
+pixel_id,
+
+data=
+panel_long
+
+)
+
+summary(
+rf_compare,
+cluster=~NAME_2
+)
+```
+```{r}
+# =========================================================
+# REGRESSION TABLE — THESIS VERSION
+# =========================================================
+
+
+
+models <- list(
+ "RF: Pixel FE" = rf_main,
+ "RF: District FE + Roads" = rf_roads,
+"First Stage" = fs,
+ "Oil only" = rf_no_baku,
+ "Oil + Interaction" = rf_compare
+)
+
+modelsummary(
+ models,
+ vcov = ~ NAME_2,
+ stars = TRUE,
+ coef_map = c(
+ "oil_price_brent:log_dist_baku" = "Oil price × log distance to Baku",
+ "oil_x_log_dist_baku" = "Oil price × log distance to Baku",
+ "oil_price_brent" = "Oil price",
+"log_dist_major" = "Log distance to major road",
+ "log_dist_secondary" = "Log distance to secondary road"
+ ),
+gof_omit = "IC|Log|RMSE",
+output = here("Output", "regression_table.tex"),
+escape = FALSE
+)
+
+
+
+etable(
+rf_main,
+ rf_roads,
+ fs,
+ rf_no_baku,
+rf_compare,
+cluster = ~ NAME_2
+) 
+```
+
+```{r}
+# =========================================================
+# CHUNK 50 — DISTRICT NTL GROWTH ANALYSIS (2010–2020)
+# =========================================================
+
+
+
+# -----------------------------------------
+# Average NTL by district and year
+# -----------------------------------------
+
+district_growth <- panel_long %>%
+  group_by(
+    NAME_2,
+    year
+  ) %>%
+  summarise(
+    mean_ntl =
+      mean(
+        ntl,
+        na.rm = TRUE
+      ),
+    .groups = "drop"
+  )
+
+# -----------------------------------------
+# Compute growth indicators
+# -----------------------------------------
+
+growth_table <- district_growth %>%
+
+  filter(
+    year %in% c(
+      2010,
+      2020
+    )
+  ) %>%
+
+  pivot_wider(
+    names_from = year,
+    values_from = mean_ntl
+  ) %>%
+
+  mutate(
+
+    growth_pct =
+
+      100 *
+      (
+        `2020`
+        -
+        `2010`
+      ) /
+      (
+        `2010`
+        +
+        0.001
+      ),
+
+    cagr =
+
+      (
+        (
+          (`2020` + 0.001) /
+          (`2010` + 0.001)
+        )^(1 / 10)
+        -
+        1
+      ) *
+      100
+
+  ) %>%
+
+  arrange(
+    desc(cagr)
+  )
+
+# -----------------------------------------
+# Show results
+# -----------------------------------------
+
+print(growth_table)
+
+# Top 10 fastest growing districts
+
+top10_growth <- growth_table %>%
+  slice_max(
+    cagr,
+    n = 10
+  )
+
+print(top10_growth)
+
+# Bottom 10
+
+bottom10_growth <- growth_table %>%
+  slice_min(
+    cagr,
+    n = 10
+  )
+
+print(bottom10_growth)
+
+# -----------------------------------------
+# Plot
+# -----------------------------------------
+
+ggplot(
+
+top10_growth,
+
+aes(
+  x = reorder(
+    NAME_2,
+    cagr
+  ),
+  y = cagr
+)
+
+)+
+
+geom_col(
+
+fill =
+"#1f77b4"
+
+)+
+
+coord_flip()+
+
+theme_minimal()+
+
+labs(
+
+title =
+"Top 10 Districts by Average Annual Nighttime Light Growth",
+
+x =
+NULL,
+
+y =
+"CAGR (%)"
+
+)
+```
+```{r}
+# =========================================================
+# CHUNK — DISTRICT GROWTH × INVESTMENT
+# =========================================================
+
+# Average investment by district
+
+investment_avg <- district_panel %>%
+  group_by(NAME_2) %>%
+  summarise(
+    avg_investment =
+      mean(
+        investment,
+        na.rm = TRUE
+      ),
+    .groups = "drop"
+  )
+
+# Merge
+
+growth_reg <- growth_table %>%
+  left_join(
+    investment_avg,
+    by = "NAME_2"
+  ) %>%
+  mutate(
+    log_inv =
+      log1p(
+        avg_investment
+      )
+  )
+
+# Regression
+
+growth_model <- lm(
+
+cagr ~
+
+log_inv,
+
+data =
+growth_reg
+
+)
+
+summary(
+growth_model
+)
+
+# =========================================================
+# CHUNK — DISTRICT GROWTH × INVESTMENT
+# =========================================================
+
+# Average investment by district
+
+investment_avg <- district_panel %>%
+  group_by(NAME_2) %>%
+  summarise(
+    avg_investment =
+      mean(
+        investment,
+        na.rm = TRUE
+      ),
+    .groups = "drop"
+  )
+
+# Merge
+
+growth_reg <- growth_table %>%
+  left_join(
+    investment_avg,
+    by = "NAME_2"
+  ) %>%
+  mutate(
+    log_inv =
+      log1p(
+        avg_investment
+      )
+  )
+
+# Regression
+
+growth_model <- lm(
+
+cagr ~
+
+log_inv,
+
+data =
+growth_reg
+
+)
+
+summary(
+growth_model
+)
+```
+```{r}
+# =========================================================
+# CHUNK 51 — INVESTMENT VS NTL GROWTH
+# =========================================================
+
+
+# Average total fixed capital investment by district
+investment_avg <- district_panel %>%
+  group_by(NAME_2) %>%
+  summarise(
+    avg_total_fixed_capital_investment = mean(
+      investment,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  )
+
+# Merge growth and investment data
+growth_reg <- growth_table %>%
+  left_join(
+    investment_avg,
+    by = "NAME_2"
+  ) %>%
+  mutate(
+    log_total_fixed_capital_investment =
+      log1p(avg_total_fixed_capital_investment),
+
+    ntl_growth =
+      log1p(`2020`) -
+      log1p(`2010`),
+
+    is_baku =
+      ifelse(NAME_2 == "Bakı", "Baku", "Other districts")
+  )
+
+# Regression
+m2 <- lm(
+  ntl_growth ~ log_total_fixed_capital_investment,
+  data = growth_reg
+)
+
+summary(m2)
+
+# Extract regression statistics
+r2 <- round(summary(m2)$r.squared, 3)
+
+pval <- round(
+  summary(m2)$coefficients[2, 4],
+  3
+)
+
+stat_label <- paste0(
+  "R² = ", r2,
+  "\n",
+  "p = ", pval
+)
+
+# Plot
+ggplot(
+  growth_reg,
+  aes(
+    x = log_total_fixed_capital_investment,
+    y = ntl_growth
+  )
+) +
+  geom_point(
+    aes(shape = is_baku),
+    alpha = 0.8,
+    size = 2.5
+  ) +
+  geom_smooth(
+    method = "lm",
+    se = TRUE,
+    linewidth = 1.4
+  ) +
+  ggrepel::geom_text_repel(
+    data = growth_reg %>% filter(NAME_2 == "Bakı"),
+    aes(label = "Baku"),
+    size = 5,
+    fontface = "bold",
+    nudge_y = 0.05
+  ) +
+  annotate(
+    "label",
+    x = max(growth_reg$log_total_fixed_capital_investment, na.rm = TRUE),
+    y = max(growth_reg$ntl_growth, na.rm = TRUE),
+    label = stat_label,
+    hjust = 1,
+    vjust = 1,
+    size = 5
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 17),
+    legend.position = "none"
+  ) +
+  labs(
+    title = "Total Fixed Capital Investment and Nighttime Light Growth",
+    subtitle = "District-level relationship, 2010–2020",
+    x = "Log average total fixed capital investment",
+    y = "Log nighttime light growth (2020–2010)"
+  )
+
+# Create Figures folder if missing
+dir.create(
+  here("Figures"),
+  showWarnings = FALSE
+)
+
+# Save PNG
+ggsave(
+
+here(
+"Figures",
+"investment_ntl_growth.png"
+),
+
+width = 10,
+height = 7,
+dpi = 400,
+bg = "white"
+
+)
+
+# Save PDF (thesis version)
+
+ggsave(
+
+here(
+"Figures",
+"investment_ntl_growth.pdf"
+),
+
+width = 10,
+height = 7
+
+)
+
+cat(
+"\nFigure saved in:",
+here("Figures")
+)
+```
+
+```{r}
+
+
+# =========================================================
+# SAMPLE COVERAGE MAP — EXCLUDED REGIONS
+# =========================================================
+
+
+# Define excluded regions
+excluded_regions <- c(
+  # Nakhchivan
+  "Babək",
+  "Culfa",
+  "Naxçıvan",
+  "Ordubad",
+  "Şahbuz",
+  "Sədərək",
+  "Şərur",
+
+  # Karabakh-related districts
+  "Ağdam",
+  "Cəbrayıl",
+  "Füzuli",
+  "Zəngilan",
+  "Qubadlı",
+  "Laçın",
+  "Kəlbəcər",
+  "Ağdərə",
+  "Xankəndi",
+  "Şuşa",
+  "Xocalı",
+  "Xocavənd"
+)
+
+# Separate included and excluded polygons
+aze_included <- aze_clean %>%
+  filter(!NAME_2 %in% excluded_regions)
+
+aze_excluded <- aze_clean %>%
+  filter(NAME_2 %in% excluded_regions)
+
+# Plot
+sample_map <- ggplot() +
+  geom_sf(
+    data = aze_clean,
+    fill = "grey95",
+    color = "grey75",
+    linewidth = 0.25
+  ) +
+  geom_sf(
+    data = aze_included,
+    fill = "white",
+    color = "grey65",
+    linewidth = 0.25
+  ) +
+  geom_sf(
+    data = aze_excluded,
+    fill = "grey90",
+    color = "black",
+    linewidth = 0.8,
+    linetype = "dashed"
+  ) +
+  theme_void() +
+  labs(
+    title = "Study Area and Excluded Regions",
+    subtitle = "Nakhchivan and Karabakh-related districts are excluded from the main sample"
+  ) +
+  theme(
+    plot.title = element_text(
+      face = "bold",
+      size = 16
+    ),
+    plot.subtitle = element_text(
+      size = 11
+    )
+  )
+
+sample_map
+```
+
+
+```{r}
+# =========================================================
+# SAVE SAMPLE COVERAGE MAP
+# =========================================================
+
+dir.create(
+  here("Figures"),
+  showWarnings = FALSE
+)
+
+ggsave(
+  filename = here(
+    "Figures",
+    "sample_coverage_excluded_regions.png"
+  ),
+  plot = sample_map,
+  width = 9,
+  height = 6,
+  dpi = 400,
+  bg = "white"
+)
+
+ggsave(
+  filename = here(
+    "Figures",
+    "sample_coverage_excluded_regions.pdf"
+  ),
+  plot = sample_map,
+  width = 9,
+  height = 6,
+  bg = "white"
+)
+```
+
