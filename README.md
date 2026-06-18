@@ -1,7 +1,7 @@
 # Roads, Oil, and Local Economic Activity in Azerbaijan: A Causal Analysis Using Nighttime Lights
 
-  [![Project Status: WIP](https://img.shields.io/badge/Project%20Status-Work%20in%20Progress-orange.svg)](https://www.repostatus.org/#wip)
-  [![Stage](https://img.shields.io/badge/Stage-Preliminary%20(2026)-blue.svg)]()
+[![Project Status: WIP](https://img.shields.io/badge/Project%20Status-Work%20in%20Progress-orange.svg)](https://www.repostatus.org/#wip)
+[![Stage](https://img.shields.io/badge/Stage-Preliminary%20(2026)-blue.svg)]()
 
 > ⚠️ **Project Status: Work in Progress (WIP)**  
 > This thesis project is currently under active development. The repository, analysis scripts, and preliminary outputs are subject to change as the research progresses.
@@ -27,12 +27,12 @@ Here are some preliminary insights and geographic distributions from the current
 ### 1. Spatial Distribution of Nighttime Lights & Infrastructure
 Below is the baseline map showcasing the intensity of nighttime lights across Azerbaijan alongside the major road networks.
 
-![Spatial Analysis of Nighttime Lights](Figures/maps/ntl_and_roads_map.png) *(Note: Replace with your actual filename)*
+![Spatial Analysis of Nighttime Lights](Figures/nighttime_lights_major_roads_2010_2020_page-0001.jpg)
 
 ### 2. Macroeconomic Trends: Oil Prices vs. Local Investment
 This plot tracks the historical co-movement of global Brent oil prices and total fixed capital investment at the district level.
 
-![Oil Prices vs Investment Trends](Figures/descriptive_statistics/oil_investment_trends.png) *(Note: Replace with your actual filename)*
+![Oil Prices vs Investment Trends](Figures/investment_ntl_growth_page-0001.jpg)
 
 ---
 
