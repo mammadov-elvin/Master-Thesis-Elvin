@@ -75,5 +75,5 @@ Where:
 
 ### 1. Clone the Repository
 ```bash
-git clone <repository-url>
+git clone [<repository-url>](https://github.com/mammadov-elvin/Master-Thesis-Elvin.git)
 cd repository-name
