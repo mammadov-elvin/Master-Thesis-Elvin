@@ -29,8 +29,8 @@ Below is the baseline map showcasing the intensity of nighttime lights across Az
 
 ![Spatial Analysis of Nighttime Lights](Figures/nighttime_lights_major_roads_2010_2020_page-0001.jpg)
 
-### 2. Macroeconomic Trends: Oil Prices vs. Local Investment
-This plot tracks the historical co-movement of global Brent oil prices and total fixed capital investment at the district level.
+### 2. Macroeconomic Trends: Night Lights Growth vs. Total fixed Investment
+This plot tracks the historical Night Lights Growth and total fixed capital investment at the district level.
 
 ![Oil Prices vs Investment Trends](Figures/investment_ntl_growth_page-0001.jpg)
 
