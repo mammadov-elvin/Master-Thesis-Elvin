@@ -1,18 +1,7 @@
-Data/
+Data/**/*.dbf
 tinytable_assets/
 Output/
 
-*.rds
-*.csv
-*.tif
-*.gpkg
-*.shp
-*.shx
-*.dbf
-*.prj
-*.cpg
-*.sbn
-*.sbx
 
 .Rhistory
 .RData

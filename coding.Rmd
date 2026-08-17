@@ -525,6 +525,8 @@ summary(panel_long$log_ntl)
 summary(panel_long$log_ntl_eps)
 ```
 
+
+
 ```{r}
 # =========================================================
 # CHUNK 24 — SAVE PANEL DATA
@@ -845,7 +847,10 @@ excel_sheets(
   )
 )
 
-oil_raw <- readxl::read_excel(
+# -----------------------------
+# Nominal prices
+# -----------------------------
+oil_nominal <- read_excel(
   here::here(
     "Data",
     "CMO-Historical-Data-Annual.xlsx"
@@ -854,9 +859,27 @@ oil_raw <- readxl::read_excel(
   skip = 6
 )
 
-dim(oil_raw)
-names(oil_raw)
-head(oil_raw)
+# -----------------------------
+# Real prices (2010 US$)
+# -----------------------------
+oil_real <- read_excel(
+  here::here(
+    "Data",
+    "CMO-Historical-Data-Annual.xlsx"
+  ),
+  sheet = "Annual Prices (Real)",
+  skip = 6
+)
+
+# Check
+dim(oil_nominal)
+dim(oil_real)
+
+names(oil_nominal)
+names(oil_real)
+
+head(oil_nominal)
+head(oil_real)
 
 ```
 
@@ -867,15 +890,23 @@ head(oil_raw)
 # =========================================================
 # CHUNK 34 — CLEAN BRENT OIL PRICE DATA
 # =========================================================
-
-oil <- oil_raw %>%
+oil <- oil_nominal %>%
   select(
     year = ...1,
-    oil_price_brent = `Crude oil, Brent`
+    oil_price_brent_nominal = `Crude oil, Brent`
+  ) %>%
+  left_join(
+    oil_real %>%
+      select(
+        year = ...1,
+        oil_price_brent_real = `Crude oil, Brent`
+      ),
+    by = "year"
   ) %>%
   mutate(
     year = as.numeric(year),
-    oil_price_brent = as.numeric(oil_price_brent)
+    oil_price_brent_nominal = as.numeric(oil_price_brent_nominal),
+    oil_price_brent_real = as.numeric(oil_price_brent_real)
   ) %>%
   filter(
     year >= 2010,
@@ -899,9 +930,9 @@ panel_long <- readRDS(
 panel_long <- panel_long %>%
   left_join(oil, by = "year")
 
-summary(panel_long$oil_price_brent)
+summary(panel_long$oil_price_brent_nominal)
 
-table(is.na(panel_long$oil_price_brent))
+table(is.na(panel_long$oil_price_brent_real))
 
 saveRDS(
   panel_long,
@@ -1026,6 +1057,13 @@ panel_long <- panel_long %>%
 panel_long <- panel_long %>%
   mutate(log_investment = log(investment + 1))
 
+
+
+
+
+
+
+
 # --- 5. Check ---
 cat("\nNA investment count:", sum(is.na(panel_long$investment)), "\n")
 cat("Total observations:", nrow(panel_long), "\n")
@@ -1038,6 +1076,43 @@ summary(panel_long$log_investment)
 # --- 6. SAVE ---
 saveRDS(panel_long, here("Data", "Clean",  "panel_with_investment.rds"))
 cat("\n✅ T\n")
+
+
+```
+
+
+
+
+```{r}
+# =========================================================
+#   ADDING REAL VALUE OF THE PRICES 
+# =========================================================
+
+gdp_deflator <- tibble(
+  year = 2010:2020,
+  gdp_deflator = c(
+    158.5907192,
+    197.6150577,
+    203.2371719,
+    204.0768745,
+    201.3622354,
+    183.6229965,
+    210.4839909,
+    244.6375538,
+    274.4452526,
+    273.8369371,
+    253.3166007
+  )
+)
+
+
+panel_long <- panel_long %>%
+  left_join(gdp_deflator, by = "year") %>%
+  mutate(
+    real_investment = investment / (gdp_deflator / 100),
+    log_real_investment = log1p(real_investment)
+  )
+
 
 
 ```
@@ -1203,10 +1278,19 @@ panel_long %>%
 district_panel <- panel_long %>%
   group_by(NAME_2, year) %>%
   summarise(
-    investment = first(investment),
-    oil_price = first(oil_price_brent),
+    investment_nominal = first(investment),
+    investment_real = first(real_investment),
+    log_investment_nominal = first(log_investment),
+    log_investment_real = first(log_real_investment),
+
+    oil_price_brent_nominal = first(oil_price_brent_nominal),
+    oil_price_brent_real = first(oil_price_brent_real),
+
+    gdp_deflator = first(gdp_deflator),
+
     district_x = first(district_x),
     district_y = first(district_y),
+
     .groups = "drop"
   )
 
@@ -1335,19 +1419,19 @@ district_panel <- district_panel %>%
     # Instrument
     oil_x_dist_baku =
 
-      oil_price *
+      oil_price_brent_nominal *
       dist_baku_km,
 
     oil_x_log_dist_baku =
 
-      oil_price *
+      oil_price_brent_nominal *
       log_dist_baku,
 
     # Outcome transform
     log_investment =
 
       log1p(
-        investment
+        investment_nominal
       )
 
   )
@@ -1360,7 +1444,7 @@ select(
 NAME_2,
 year,
 
-oil_price,
+oil_price_brent_nominal,
 
 dist_baku_km,
 
@@ -1368,7 +1452,7 @@ oil_x_dist_baku,
 
 oil_x_log_dist_baku,
 
-investment,
+investment_nominal,
 
 log_investment
 
@@ -1429,8 +1513,9 @@ panel_long$dist_baku_km
 desc_data <- panel_long %>%
   select(
     `NTL` = ntl,
-    `Log NTL` = log_ntl_eps,
-    `Brent oil price` = oil_price_brent,
+    `Log(NTL+1)` = log_ntl,
+    `Brent oil price nominal` = oil_price_brent_nominal,
+    `Brent oil price real` = oil_price_brent_real,
     `Distance to Baku (km)` = dist_baku_km,
     `Distance to major road (m)` = dist_major_road_m,
     `Distance to secondary road (m)` = dist_secondary_road_m
@@ -1474,14 +1559,24 @@ here(
 desc_district <- district_panel %>%
   select(
 
-    `Total fixed capital investment` =
-      investment,
+    `Total fixed capital investment nominal` =
+      investment_nominal,
+    
+    `Total fixed capital investment real` =
+      investment_real,
 
-    `Log investment` =
-      log_investment,
+    `Log investment nominal` =
+      log_investment_nominal,
+    
+      `Log investment real` =
+      log_investment_real,
 
-    `Brent oil price` =
-      oil_price,
+    `Brent oil price nominal` =
+      oil_price_brent_nominal,
+    
+    `Brent oil price real` =
+      oil_price_brent_real,
+
 
     `Distance to Baku (km)` =
       dist_baku_km,
@@ -1529,9 +1624,9 @@ here(
 ```{r} 
 rf_main <- feols(
 
-log_ntl_eps ~
+log_ntl ~
 
-oil_price_brent:
+oil_price_brent_real:
 log_dist_baku
 
 |
@@ -1555,9 +1650,9 @@ cluster=
 ```{r}
 rf_roads <- feols(
 
-log_ntl_eps ~
+log_ntl ~
 
-oil_price_brent:
+oil_price_brent_real:
 log_dist_baku
 
 +
@@ -1585,43 +1680,45 @@ cluster=
 
 
 ```{r}
+
 fs <- feols(
 
-log_investment ~
+  log_investment_real ~
 
-oil_x_log_dist_baku
+    oil_price_brent_real:log_dist_baku
 
-|
+  |
 
-NAME_2
-+
-year,
+    NAME_2 +
+    year,
 
-data=
-district_panel
+  data = district_panel
 
 )
 
 summary(
-fs,
-cluster=
-~NAME_2
+  fs,
+  cluster = ~NAME_2
 )
 ```
 
 ```{r}
+
+
+panel_no_baku <- panel_long %>%
+  filter(NAME_2 != "Bakı")
 rf_no_baku <- feols(
 
-log_ntl_eps ~
+log_ntl ~
 
-oil_price_brent
+oil_price_brent_real
 
 |
 
 pixel_id,
 
 data=
-panel_long
+panel_no_baku
 
 )
 
@@ -1633,11 +1730,11 @@ cluster=~NAME_2
 ```{r}
 rf_compare <- feols(
 
-log_ntl_eps ~
+log_ntl ~
 
-oil_price_brent
+oil_price_brent_real
 +
-oil_price_brent:log_dist_baku
+oil_price_brent_real:log_dist_baku
 
 |
 
@@ -1664,7 +1761,7 @@ models <- list(
  "RF: Pixel FE" = rf_main,
  "RF: District FE + Roads" = rf_roads,
 "First Stage" = fs,
- "Oil only" = rf_no_baku,
+
  "Oil + Interaction" = rf_compare
 )
 
@@ -1674,7 +1771,7 @@ modelsummary(
  stars = TRUE,
  coef_map = c(
  "oil_price_brent:log_dist_baku" = "Oil price × log distance to Baku",
- "oil_x_log_dist_baku" = "Oil price × log distance to Baku",
+ 
  "oil_price_brent" = "Oil price",
 "log_dist_major" = "Log distance to major road",
  "log_dist_secondary" = "Log distance to secondary road"
@@ -1690,11 +1787,132 @@ etable(
 rf_main,
  rf_roads,
  fs,
- rf_no_baku,
+
 rf_compare,
 cluster = ~ NAME_2
 ) 
 ```
+```{r}
+# Models
+models <- list(
+  "Baseline Reduced Form"     = rf_main,
+  "Road-Adjusted Specification" = rf_roads,
+  "Investment First Stage"    = fs,
+  "Alternative Specification" = rf_compare
+)
+
+# Professional coefficient labels
+coef_labels <- c(
+  "oil_price_brent:log_dist_baku" =
+    "Brent oil price × log distance to Baku",
+
+  "oil_price_brent" =
+    "Brent oil price",
+
+  "log_dist_major" =
+    "Log distance to nearest major road",
+
+  "log_dist_secondary" =
+    "Log distance to nearest secondary road"
+)
+
+# Professional goodness-of-fit labels
+gof_labels <- tribble(
+  ~raw,              ~clean,                         ~fmt,
+  "nobs",             "Observations",                  0,
+  "r.squared",        "R²",                            3,
+  "r.squared_within", "Within R²",                     3,
+  "FE: pixel_id",     "Pixel fixed effects",            0,
+  "FE: year",         "Year fixed effects",             0,
+  "FE: NAME_2",       "District fixed effects",         0,
+  "Std.Errors",       "Standard errors clustered by",   0
+)
+
+# Export LaTeX regression table
+modelsummary(
+  models,
+
+  vcov = ~NAME_2,
+
+  stars = c(
+    "*"   = 0.10,
+    "**"  = 0.05,
+    "***" = 0.01
+  ),
+
+  coef_map = coef_labels,
+
+  gof_map = gof_labels,
+
+  output = here(
+    "Output",
+    "regression_table.tex"
+  ),
+
+  escape = FALSE,
+
+  notes = paste(
+    "District-clustered standard errors are reported in parentheses.",
+    "The dependent variable is log(NTL + 1), except in the first-stage",
+    "specification, where the dependent variable is log fixed capital investment."
+  )
+)
+
+
+
+etable(
+  rf_main,
+  rf_roads,
+  fs,
+  rf_compare,
+
+  headers = c(
+    "Baseline Reduced Form",
+    "Road-Adjusted Specification",
+    "Investment First Stage",
+    "Alternative Specification"
+  ),
+
+  dict = c(
+    "oil_price_brent:log_dist_baku" =
+      "Brent oil price × log distance to Baku",
+
+    "oil_price_brent" =
+      "Brent oil price",
+
+    "log_dist_major" =
+      "Log distance to nearest major road",
+
+    "log_dist_secondary" =
+      "Log distance to nearest secondary road",
+
+    "pixel_id" =
+      "Pixel",
+
+    "year" =
+      "Year",
+
+    "NAME_2" =
+      "District"
+  ),
+
+  cluster = ~NAME_2,
+
+  fitstat = ~n + r2 + wr2
+)
+```
+```{r}
+feols(
+  log_ntl ~ oil_price_brent_real:log_dist_baku +
+            oil_price_brent_real:log_dist_major +
+            oil_price_brent_real:log_dist_secondary |
+            NAME_2 + year,
+  cluster = ~ NAME_2,
+  data = panel_long
+)
+```
+
+
 
 ```{r}
 # =========================================================
@@ -1853,7 +2071,7 @@ investment_avg <- district_panel %>%
   summarise(
     avg_investment =
       mean(
-        investment,
+        investment_real,
         na.rm = TRUE
       ),
     .groups = "drop"
@@ -1901,7 +2119,7 @@ investment_avg <- district_panel %>%
   summarise(
     avg_investment =
       mean(
-        investment,
+        investment_real,
         na.rm = TRUE
       ),
     .groups = "drop"
@@ -1949,7 +2167,7 @@ investment_avg <- district_panel %>%
   group_by(NAME_2) %>%
   summarise(
     avg_total_fixed_capital_investment = mean(
-      investment,
+      investment_real,
       na.rm = TRUE
     ),
     .groups = "drop"
@@ -2195,5 +2413,108 @@ ggsave(
   height = 6,
   bg = "white"
 )
+```
+
+
+
+
+
+```{r}
+trend_data <- district_panel %>%
+  group_by(year) %>%
+  summarise(
+    total_real_investment =
+      sum(investment_real, na.rm = TRUE),
+
+    oil_price_brent_real =
+      first(oil_price_brent_real),
+
+    .groups = "drop"
+  )
+
+# Sağ ox üçün scale factor
+scale_factor <-
+  max(trend_data$total_real_investment, na.rm = TRUE) /
+  max(trend_data$oil_price_brent_real, na.rm = TRUE)
+
+p_trend <- ggplot(
+  trend_data,
+  aes(x = year)
+) +
+
+  geom_line(
+    aes(
+      y = total_real_investment,
+      linetype = "Total real fixed capital investment"
+    ),
+    linewidth = 1.1
+  ) +
+
+  geom_point(
+    aes(
+      y = total_real_investment
+    ),
+    size = 2
+  ) +
+
+  geom_line(
+    aes(
+      y = oil_price_brent_real * scale_factor,
+      linetype = "Real Brent oil price"
+    ),
+    linewidth = 1.1
+  ) +
+
+  geom_point(
+    aes(
+      y = oil_price_brent_real * scale_factor
+    ),
+    size = 2
+  ) +
+
+  scale_y_continuous(
+    name =
+      "Total real fixed capital investment (constant 2005 AZN)",
+
+    sec.axis = sec_axis(
+      ~ . / scale_factor,
+      name =
+        "Real Brent oil price (constant 2010 US$/barrel)"
+    )
+  ) +
+
+  scale_linetype_manual(
+    name = NULL,
+    values = c(
+      "Total real fixed capital investment" = "solid",
+      "Real Brent oil price" = "dashed"
+    )
+  ) +
+
+  scale_x_continuous(
+    breaks = sort(unique(trend_data$year))
+  ) +
+
+  theme_minimal() +
+
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    )
+  ) +
+
+  labs(
+    title =
+      "Real Fixed Capital Investment and Real Brent Oil Prices",
+
+    subtitle =
+      "Total investment across all districts",
+
+    x = "Year"
+  )
+
+p_trend
 ```
 
