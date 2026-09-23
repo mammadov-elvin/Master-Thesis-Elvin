@@ -1,0 +1,3540 @@
+---
+title: "VIIRS"
+output: html_document
+date: "2026-09-09"
+---
+---
+title: "DMSP night lights"
+output: html_document
+date: "2026-08-23"
+---
+
+---
+title: "Untitled"
+output: html_document
+date: "2026-04-27"
+---
+```{r}
+# =========================================================
+# CHUNK 1 — PACKAGES
+# =========================================================
+
+packages <- c(
+  "terra",
+  "sf",
+  "dplyr",
+  "ggplot2",
+  "geodata",
+  "lwgeom",
+  "tidyr",
+  "readxl",
+  "stringr",
+  "fixest",
+  "here", 
+  "geosphere", 
+  "modelsummary",
+  "ggrepel", 
+  "tinytable",
+  "knitr"
+)
+
+new_packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+
+if(length(new_packages))
+  install.packages(new_packages)
+
+invisible(lapply(packages, library, character.only = TRUE))
+
+
+```
+
+
+
+```{r}
+
+# =========================================================
+# CHUNK 2 — LOAD NIGHTTIME LIGHT FILES (VIIRS)
+# =========================================================
+
+# Years available in the VIIRS robustness sample
+years <- 2013:2020
+
+# File paths
+ntl_files <- file.path(
+  "Data/VIIRS DATA MASKED/",
+  paste0("VIIRS_Azerbaijan_", years, ".tif")
+)
+
+# Check whether all files exist
+if (!all(file.exists(ntl_files))) {
+  stop("Some NTL files are not found!")
+}
+
+# Load annual VIIRS rasters
+ntl_stack <- rast(ntl_files)
+
+# Keep the same naming structure as before
+names(ntl_stack) <- paste0("ntl_", years)
+
+
+# Check files
+print(ntl_files)
+print(ntl_stack)
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK 3 — CLEAN NIGHTTIME LIGHT DATA
+# =========================================================
+# Negative values are invalid
+ntl_stack[ntl_stack < 0] <- NA
+
+# Maximum light across all years
+ntl_max <- max(ntl_stack, na.rm = TRUE)
+
+# Log-transform for better visualization
+ntl_max_log <- log1p(ntl_max)
+
+
+
+
+```
+
+
+
+
+
+
+```{r}
+
+# =========================================================
+# CHUNK 4 — LOAD AZERBAIJAN DISTRICT BOUNDARIES
+# =========================================================
+aze <- st_read(
+  here("Data", "azrbaycan_rayonlar.geojson"),
+  quiet = TRUE
+)
+
+# Convert to sf and repair geometries
+aze_sf <- st_as_sf(aze)
+aze_sf <- st_make_valid(aze_sf)
+
+# Make sure geographic CRS is WGS84
+aze_sf <- st_transform(aze_sf, 4326)
+
+# -----------------------------------------
+# Transform to metric CRS
+# UTM Zone 39N — suitable for Azerbaijan
+# -----------------------------------------
+
+aze_plot <- st_transform(
+  aze_sf,
+  32639
+)
+
+# -----------------------------------------
+# Inspect available variables
+# -----------------------------------------
+
+names(aze_sf)
+
+# Check number of administrative units
+nrow(aze_sf)
+
+# Check attribute table
+st_drop_geometry(aze_sf)
+```
+
+```{r}
+# =========================================================
+# PLOT CURRENT ADMINISTRATIVE DISTRICTS OF AZERBAIJAN
+# =========================================================
+
+plot(
+  st_geometry(aze_plot),
+  main = "Administrative Districts of Azerbaijan",
+  border = "grey20",
+  lwd = 0.6,
+  col = "grey95",
+  axes = FALSE
+)
+```
+
+```{r}
+# =========================================================
+# LARGE ADMINISTRATIVE MAP
+# =========================================================
+
+pdf(
+  here::here(
+    "Figures",
+    "azerbaijan_administrative_map.pdf"
+  ),
+  width = 14,
+  height = 9
+)
+
+par(mar = c(0.5, 0.5, 2, 0.5))
+
+plot(
+  st_geometry(aze_plot),
+  main = "Administrative Districts of Azerbaijan",
+  border = "grey20",
+  lwd = 0.8,
+  col = "grey95",
+  axes = FALSE
+)
+
+dev.off()
+```
+
+
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK 5 — MAP 1: REAL NIGHTTIME LIGHT INTENSITY MAP
+# =========================================================
+
+
+# =========================================================
+# Maximum NTL map (publication style)
+# =========================================================
+
+ntl_max_log_utm <- project(ntl_max_log, "EPSG:32639")
+
+pdf(
+  file = here::here(
+    "figures",
+    "max_ntl_intensity_2013_2020.pdf"
+  ),
+  width = 8,
+  height = 6
+)
+
+plot(
+  ntl_max_log_utm,
+  col = hcl.colors(150, "Inferno"),
+  axes = FALSE,
+  box = FALSE,
+  legend.args = list(
+    text = "log(NTL + 1)",
+    side = 4,
+    line = 2
+  ),
+  main = "Maximum Nighttime Light Intensity in Azerbaijan (2013–2020)"
+)
+
+plot(
+  st_geometry(aze_plot),
+  add = TRUE,
+  border = "grey20",
+  lwd = 0.4
+)
+
+dev.off()
+```
+
+
+
+```{r}
+# =========================================================
+# CHUNK 16 — DEFINE EVER-LIT PIXELS, BUT CLEANER VERSION
+# =========================================================
+
+
+# Convert NA to 0
+ntl_stack_zero <- subst(ntl_stack, NA, 0)
+
+# Count how many years each pixel has positive NTL
+lit_count <- app(
+  ntl_stack_zero > 0,
+  sum,
+  na.rm = TRUE
+)
+
+# Keep pixels that have been illuminated in at least 3 years
+ever_lit_panel <- lit_count >= 3
+
+plot(ever_lit_panel)
+
+cat(
+  "Kept stable-lit pixels:",
+  global(ever_lit_panel, "sum", na.rm = TRUE)[1, 1],
+  "\n"
+)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 17 — CREATE PIXEL GRID ONLY FOR EVER-LIT PIXELS
+# =========================================================
+
+template <- ntl_stack_zero[[1]]
+
+# All cell IDs
+all_cells <- 1:ncell(template)
+
+# Extract ever-lit value for all cells
+ever_lit_values <- values(ever_lit_panel)
+
+# Keep only cells where ever_lit_panel == TRUE
+keep_cells <- all_cells[ever_lit_values == 1]
+
+cat("Total raster pixels:", length(all_cells), "\n")
+cat("Ever-lit pixels kept:", length(keep_cells), "\n")
+
+# Coordinates of kept pixels
+xy <- xyFromCell(template, keep_cells)
+
+pixels_df <- data.frame(
+  pixel_id = keep_cells,
+  x = xy[, 1],
+  y = xy[, 2]
+)
+
+head(pixels_df)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 18 — CONVERT PIXELS TO SF POINTS
+# =========================================================
+
+pixels_sf <- st_as_sf(
+  pixels_df,
+  coords = c("x", "y"),
+  crs = crs(template),
+  remove = FALSE
+)
+
+head(pixels_sf)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 19 — ASSIGN ADMINISTRATIVE DISTRICT TO EACH PIXEL
+# =========================================================
+
+# Transform current Azerbaijan administrative boundaries
+# to the same CRS as the pixel dataset
+aze_for_join <- st_transform(
+  aze_sf,
+  st_crs(pixels_sf)
+)
+
+# Assign district name to each pixel
+pixels_sf <- st_join(
+  pixels_sf,
+  aze_for_join %>%
+    select(Name_AZ) %>%
+    rename(NAME_2 = Name_AZ),
+  left = FALSE
+)
+
+# Check result
+cat(
+  "Ever-lit pixels inside Azerbaijan districts:",
+  nrow(pixels_sf),
+  "\n"
+)
+
+# Number of districts represented
+cat(
+  "Number of districts:",
+  length(unique(pixels_sf$NAME_2)),
+  "\n"
+)
+
+# Preview
+head(pixels_sf)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 20 — EXTRACT NTL VALUES FOR EACH PIXEL AND YEAR
+# =========================================================
+
+# Extract NTL values from the ORIGINAL VIIRS stack.
+# Do not use ntl_stack_zero here, because NA and 0
+# should remain distinguishable.
+
+ntl_values <- terra::extract(
+  ntl_stack,
+  vect(pixels_sf)
+)
+
+# Remove terra-generated ID column
+ntl_values <- ntl_values %>%
+  select(-ID)
+
+# Check first rows
+head(ntl_values)
+
+# Check missing values for each year
+colSums(
+  is.na(ntl_values)
+)
+
+# Check that the number of extracted rows
+# matches the number of pixel points
+cat(
+  "Pixels in pixels_sf:",
+  nrow(pixels_sf),
+  "\n"
+)
+
+cat(
+  "Rows in ntl_values:",
+  nrow(ntl_values),
+  "\n"
+)
+
+stopifnot(
+  nrow(pixels_sf) == nrow(ntl_values)
+)
+```
+```{r}
+# =========================================================
+# CHUNK 21 — INSPECT NTL DISTRIBUTION FOR SELECTED PIXELS
+# =========================================================
+
+# ntl_values was extracted from the ORIGINAL ntl_stack
+# for the selected pixels in pixels_sf.
+
+# ---------------------------------------------------------
+# 1. Check dimensions
+# ---------------------------------------------------------
+
+cat(
+  "Selected pixels:",
+  nrow(pixels_sf),
+  "\n"
+)
+
+cat(
+  "Rows in extracted NTL data:",
+  nrow(ntl_values),
+  "\n"
+)
+
+stopifnot(
+  nrow(pixels_sf) == nrow(ntl_values)
+)
+
+
+# ---------------------------------------------------------
+# 2. Basic statistics for 2020
+# ---------------------------------------------------------
+
+ntl_2020_selected <- ntl_values[["ntl_2020"]]
+
+quantile(
+  ntl_2020_selected,
+  probs = c(
+    0,
+    0.25,
+    0.50,
+    0.75,
+    0.90,
+    0.95,
+    0.99,
+    1
+  ),
+  na.rm = TRUE
+)
+
+
+# ---------------------------------------------------------
+# 3. Mean NTL by year for selected pixels
+# ---------------------------------------------------------
+
+year_means_selected <- data.frame(
+  year = 2013:2020,
+  mean_ntl = sapply(
+    ntl_values,
+    mean,
+    na.rm = TRUE
+  )
+)
+
+print(year_means_selected)
+
+
+# =========================================================
+# 4. PIXEL DISTRIBUTION BY YEAR — SELECTED PIXELS ONLY
+# =========================================================
+
+years <- 2013:2020
+
+pixel_distribution <- lapply(
+  seq_along(years),
+  function(i) {
+
+    x <- ntl_values[[i]]
+
+    data.frame(
+
+      year = years[i],
+
+      # Total number of selected pixels
+      total_pixels = length(x),
+
+      # Missing NTL observations
+      na_pixels = sum(
+        is.na(x)
+      ),
+
+      # Valid/non-missing observations
+      valid_pixels = sum(
+        !is.na(x)
+      ),
+
+      # Negative radiance
+      negative = sum(
+        x < 0,
+        na.rm = TRUE
+      ),
+
+      # Exactly zero
+      zero = sum(
+        x == 0,
+        na.rm = TRUE
+      ),
+
+      # 0 < NTL < 1
+      between_0_1 = sum(
+        x > 0 &
+        x < 1,
+        na.rm = TRUE
+      ),
+
+      # 1 <= NTL < 5
+      between_1_5 = sum(
+        x >= 1 &
+        x < 5,
+        na.rm = TRUE
+      ),
+
+      # 5 <= NTL < 20
+      between_5_20 = sum(
+        x >= 5 &
+        x < 20,
+        na.rm = TRUE
+      ),
+
+      # 20 <= NTL < 100
+      between_20_100 = sum(
+        x >= 20 &
+        x < 100,
+        na.rm = TRUE
+      ),
+
+      # 100 <= NTL < 500
+      between_100_500 = sum(
+        x >= 100 &
+        x < 500,
+        na.rm = TRUE
+      ),
+
+      # NTL >= 500
+      above_500 = sum(
+        x >= 500,
+        na.rm = TRUE
+      )
+    )
+  }
+) %>%
+  bind_rows()
+
+
+# ---------------------------------------------------------
+# 5. Show counts
+# ---------------------------------------------------------
+
+print(pixel_distribution)
+
+
+# =========================================================
+# 6. ADD PERCENTAGES OF VALID OBSERVATIONS
+# =========================================================
+
+pixel_distribution_pct <- pixel_distribution %>%
+  mutate(
+
+    negative_pct =
+      100 * negative / valid_pixels,
+
+    zero_pct =
+      100 * zero / valid_pixels,
+
+    between_0_1_pct =
+      100 * between_0_1 / valid_pixels,
+
+    between_1_5_pct =
+      100 * between_1_5 / valid_pixels,
+
+    between_5_20_pct =
+      100 * between_5_20 / valid_pixels,
+
+    between_20_100_pct =
+      100 * between_20_100 / valid_pixels,
+
+    between_100_500_pct =
+      100 * between_100_500 / valid_pixels,
+
+    above_500_pct =
+      100 * above_500 / valid_pixels
+  )
+
+print(pixel_distribution_pct)
+
+
+# =========================================================
+# 7. CHECK WHETHER ALL VALID PIXELS ARE CLASSIFIED
+# =========================================================
+
+pixel_distribution_check <- pixel_distribution %>%
+  mutate(
+
+    classified_pixels =
+      negative +
+      zero +
+      between_0_1 +
+      between_1_5 +
+      between_5_20 +
+      between_20_100 +
+      between_100_500 +
+      above_500,
+
+    difference =
+      valid_pixels -
+      classified_pixels
+  )
+
+print(pixel_distribution_check)
+
+
+# =========================================================
+# 8. CHECK MISSING VALUES BY YEAR
+# =========================================================
+
+cat(
+  "\nMissing values by year:\n"
+)
+
+print(
+  colSums(
+    is.na(ntl_values)
+  )
+)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 21 — CREATE WIDE PANEL DATA
+# =========================================================
+
+
+panel_wide <- bind_cols(
+  
+  pixels_sf %>%
+    st_drop_geometry() %>%
+    select(
+      pixel_id,
+      x,
+      y,
+      NAME_2
+    ),
+  
+  ntl_values
+)
+
+# Check
+head(panel_wide)
+
+# Dimensions
+dim(panel_wide)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 22 — CONVERT TO LONG PIXEL-YEAR PANEL
+# =========================================================
+
+panel_long <- panel_wide %>%
+  pivot_longer(
+    cols = starts_with("ntl_"),
+    names_to = "year",
+    values_to = "ntl"
+  ) %>%
+  mutate(
+    year = as.numeric(
+      gsub("ntl_", "", year)
+    ),
+    log_ntl = log1p(ntl)
+  ) %>%
+  arrange(
+    pixel_id,
+    year
+  )
+
+head(panel_long)
+dim(panel_long)
+
+# Check missing NTL observations
+sum(is.na(panel_long$ntl))
+
+```
+
+
+```{r}
+# =========================================================
+# CLEAN ADMINISTRATIVE DISTRICTS
+# =========================================================
+# Current administrative boundaries are used.
+# Old GADM name corrections are no longer required.
+#
+# Nakhchivan remains in the analytical sample.
+# Selected conflict-affected districts are excluded.
+# =========================================================
+
+
+# -----------------------------------------
+# Districts to exclude
+# -----------------------------------------
+
+excluded_districts <- c(
+  "Ağdam",
+  "Füzuli",
+  "Cəbrayıl",
+  "Zəngilan",
+  "Qubadlı",
+  "Kəlbəcər",
+  "Laçın",
+  "Şuşa",
+  "Xankəndi",
+  "Xocalı",
+  "Xocavənd",
+  "Tərtər",
+  "Ağdərə"
+)
+
+
+# -----------------------------------------
+# Check district names BEFORE filtering
+# -----------------------------------------
+
+cat(
+  "Number of districts before filtering:",
+  length(unique(panel_long$NAME_2)),
+  "\n"
+)
+
+sort(
+  unique(panel_long$NAME_2)
+)
+
+
+# -----------------------------------------
+# Check which exclusion names actually
+# exist in the current administrative data
+# -----------------------------------------
+
+districts_found <- intersect(
+  excluded_districts,
+  unique(panel_long$NAME_2)
+)
+
+cat(
+  "\nDistricts found and to be excluded:\n"
+)
+
+print(districts_found)
+
+
+# -----------------------------------------
+# Check if any requested names are NOT
+# present in the current administrative data
+# -----------------------------------------
+
+districts_not_found <- setdiff(
+  excluded_districts,
+  unique(panel_long$NAME_2)
+)
+
+cat(
+  "\nRequested exclusion names not found in data:\n"
+)
+
+print(districts_not_found)
+
+
+# -----------------------------------------
+# Remove selected districts
+# Nakhchivan is NOT excluded
+# -----------------------------------------
+
+panel_long <- panel_long %>%
+  filter(
+    !NAME_2 %in% excluded_districts
+  )
+
+
+# -----------------------------------------
+# Check district names AFTER filtering
+# -----------------------------------------
+
+cat(
+  "\nNumber of districts after filtering:",
+  length(unique(panel_long$NAME_2)),
+  "\n"
+)
+
+sort(
+  unique(panel_long$NAME_2)
+)
+
+
+# -----------------------------------------
+# Final verification
+# -----------------------------------------
+
+remaining_excluded <- intersect(
+  excluded_districts,
+  unique(panel_long$NAME_2)
+)
+
+cat(
+  "\nExcluded districts still present in panel_long:\n"
+)
+
+print(remaining_excluded)
+
+
+# -----------------------------------------
+# Check Nakhchivan-related units
+# -----------------------------------------
+
+cat(
+  "\nNakhchivan-related administrative units remaining:\n"
+)
+
+print(
+  sort(
+    unique(
+      panel_long$NAME_2[
+        grepl(
+          "Nax|Şərur|Şahbuz|Culfa|Ordubad|Babək|Kəngərli|Sədərək",
+          panel_long$NAME_2,
+          ignore.case = TRUE
+        )
+      ]
+    )
+  )
+)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 23B — ADD ALTERNATIVE LOG VARIABLES
+# =========================================================
+
+panel_long <- panel_long %>%
+  mutate(
+    # Main specification
+    log_ntl = log1p(ntl),
+    
+    # Robustness: small constant as in zero-light literature
+    ntl_eps = ifelse(ntl == 0, 0.01, ntl),
+    log_ntl_eps = log(ntl_eps)
+  )
+
+summary(panel_long$log_ntl)
+summary(panel_long$log_ntl_eps)
+```
+
+
+
+```{r}
+# =========================================================
+# CHUNK 24 — SAVE PANEL DATA
+# =========================================================
+
+saveRDS(
+  panel_long,
+  here::here(
+    "data",
+    "clean",
+    "pixel_year_panel_ever_lit_2013_2020_VIIRS.rds"
+  )
+)
+
+cat(
+  "Saved:",
+  here::here(
+    "data",
+    "clean",
+    "pixel_year_panel_ever_lit_2013_2020_VIIRS.rds"
+  ),
+  "\n"
+)
+```
+
+
+
+```{r}
+# =========================================================
+# CHUNK 3 — LOAD SETTLEMENT DATA
+# AND EXCLUDE SELECTED DISTRICTS
+# =========================================================
+
+
+# -----------------------------------------
+# Load settlement GeoJSON
+# -----------------------------------------
+
+aze_new <- st_read(
+  here::here(
+    "Data",
+    "azrbaycann_hrlri_v_inzibati_razi_vahidlri.geojson"
+  )
+)
+
+
+# -----------------------------------------
+# Basic checks
+# -----------------------------------------
+
+names(aze_new)
+
+unique(aze_new$TYPE_AZ)
+
+head(
+  st_drop_geometry(aze_new)
+)
+
+nrow(aze_new)
+
+
+# -----------------------------------------
+# Districts to exclude
+# -----------------------------------------
+
+excluded_districts <- c(
+  "Ağdam",
+  "Ağdərə",
+  "Füzuli",
+  "Cəbrayıl",
+  "Zəngilan",
+  "Qubadlı",
+  "Kəlbəcər",
+  "Laçın",
+  "Şuşa",
+  "Xankəndi",
+  "Xocalı",
+  "Xocavənd",
+  "Tərtər"
+)
+
+
+# -----------------------------------------
+# Check which excluded districts exist
+# in the settlement data
+# -----------------------------------------
+
+cat(
+  "\nExcluded districts found in aze_new:\n"
+)
+
+print(
+  intersect(
+    excluded_districts,
+    unique(aze_new$STATE_AZ)
+  )
+)
+
+
+# -----------------------------------------
+# Number of settlements before exclusion
+# -----------------------------------------
+
+cat(
+  "\nNumber of settlements before exclusion:",
+  nrow(aze_new),
+  "\n"
+)
+
+
+# -----------------------------------------
+# Exclude all settlements belonging
+# to selected districts
+# -----------------------------------------
+
+aze_new <- aze_new %>%
+  filter(
+    !STATE_AZ %in% excluded_districts
+  )
+
+
+# -----------------------------------------
+# Number of settlements after exclusion
+# -----------------------------------------
+
+cat(
+  "\nNumber of settlements after exclusion:",
+  nrow(aze_new),
+  "\n"
+)
+
+
+# -----------------------------------------
+# Verify excluded districts are gone
+# -----------------------------------------
+
+cat(
+  "\nExcluded districts still present:\n"
+)
+
+print(
+  intersect(
+    excluded_districts,
+    unique(aze_new$STATE_AZ)
+  )
+)
+
+
+# -----------------------------------------
+# Check settlement types
+# -----------------------------------------
+
+aze_new %>%
+  st_drop_geometry() %>%
+  count(
+    TYPE_AZ
+  )
+
+
+# -----------------------------------------
+# Check Nakhchivan districts
+# Nakhchivan remains in the data
+# -----------------------------------------
+
+aze_new %>%
+  st_drop_geometry() %>%
+  filter(
+    STATE_AZ %in% c(
+      "Babək",
+      "Culfa",
+      "Kəngərli",
+      "Naxçıvan",
+      "Ordubad",
+      "Şahbuz",
+      "Sədərək",
+      "Şərur"
+    )
+  ) %>%
+  count(
+    STATE_AZ
+  )
+
+
+# -----------------------------------------
+# Final list of districts
+# -----------------------------------------
+
+sort(
+  unique(
+    aze_new$STATE_AZ
+  )
+)
+```
+
+```{r}
+# =========================================================
+# CHUNK 3A — MAP OF ADMINISTRATIVE SETTLEMENTS
+# =========================================================
+
+
+# -----------------------------------------
+# Prepare settlement data
+# -----------------------------------------
+
+settlements_map <- aze_new %>%
+  st_make_valid() %>%
+  st_transform(4326) %>%
+  mutate(
+    settlement_type = case_when(
+      TYPE_AZ == "şəhər"   ~ "City",
+      TYPE_AZ == "qəsəbə"  ~ "Town",
+      TYPE_AZ == "kənd"    ~ "Village",
+      TRUE                 ~ "Other"
+    ),
+    settlement_type = factor(
+      settlement_type,
+      levels = c(
+        "Village",
+        "Town",
+        "City"
+      )
+    )
+  )
+
+
+# -----------------------------------------
+# Prepare administrative boundaries
+# -----------------------------------------
+
+aze_map <- aze_sf %>%
+  st_make_valid() %>%
+  st_transform(4326)
+
+
+# -----------------------------------------
+# Excluded conflict-affected districts
+# -----------------------------------------
+
+excluded_area_map <- aze_map %>%
+  filter(
+    Name_AZ %in% excluded_districts
+  )
+
+
+# -----------------------------------------
+# National outline
+# -----------------------------------------
+
+aze_outline <- aze_map %>%
+  summarise()
+
+
+# -----------------------------------------
+# Create figure
+# -----------------------------------------
+
+settlement_figure <- ggplot() +
+
+  # District polygons
+  geom_sf(
+    data = aze_map,
+    fill = "grey97",
+    color = "grey80",
+    linewidth = 0.15
+  ) +
+
+  # Excluded districts
+  geom_sf(
+    data = excluded_area_map,
+    aes(fill = "Excluded conflict-affected districts"),
+    color = "black",
+    linewidth = 0.25
+  ) +
+
+  # Settlement points
+  geom_sf(
+    data = settlements_map,
+    aes(
+      color = settlement_type,
+      size = settlement_type
+    ),
+    alpha = 0.75
+  ) +
+
+  # National border
+  geom_sf(
+    data = aze_outline,
+    fill = NA,
+    color = "black",
+    linewidth = 0.5
+  ) +
+
+  # Colours by settlement type
+  scale_color_manual(
+    values = c(
+      "Village"    = "#2CA25F",
+      "Town" = "#3182BD",
+      "City"       = "#DE2D26"
+    ),
+    name = "Settlement type"
+  ) +
+
+  # Different point sizes
+  scale_size_manual(
+    values = c(
+      "Village"    = 0.35,
+      "Town" = 0.75,
+      "City"       = 1.25
+    ),
+    name = "Settlement type"
+  ) +
+
+  # Excluded area legend
+  scale_fill_manual(
+    values = c(
+      "Excluded conflict-affected districts" = "grey10"
+    ),
+    name = NULL
+  ) +
+
+  guides(
+    color = guide_legend(
+      order = 1,
+      override.aes = list(
+        size = c(2, 2.5, 3),
+        alpha = 1
+      )
+    ),
+    size = "none",
+    fill = guide_legend(order = 2)
+  ) +
+
+  labs(
+    title = "Administrative Settlements in Azerbaijan",
+    subtitle = "Cities, Towns, and villages included in the spatial analysis"
+  ) +
+
+  coord_sf(
+    datum = NA
+  ) +
+
+  theme_minimal(base_size = 11) +
+
+  theme(
+    panel.grid = element_blank(),
+
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+
+    plot.title = element_text(
+      face = "bold",
+      size = 15,
+      hjust = 0.5
+    ),
+
+    plot.subtitle = element_text(
+      size = 10,
+      hjust = 0.5
+    ),
+
+    legend.position = "right",
+
+    legend.title = element_text(
+      face = "bold"
+    ),
+
+    plot.margin = margin(
+      10, 10, 10, 10
+    )
+  )
+
+
+# -----------------------------------------
+# Display figure
+# -----------------------------------------
+
+settlement_figure
+
+
+# -----------------------------------------
+# Save for thesis
+# -----------------------------------------
+
+dir.create(
+  here("Figures"),
+  showWarnings = FALSE
+)
+
+ggsave(
+  filename = here(
+    "Figures",
+    "administrative_settlements_azerbaijan.png"
+  ),
+  plot = settlement_figure,
+  width = 20,
+  height = 13,
+  units = "cm",
+  dpi = 300,
+  bg = "white"
+)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK — DISTANCE TO NEAREST SETTLEMENT
+# AND MERGE WITH panel_long
+# =========================================================
+
+
+# ---------------------------------------------------------
+# 1. Create unique pixel locations
+# ---------------------------------------------------------
+# Each pixel appears several times in panel_long
+# because of the yearly observations.
+# Distance only needs to be calculated once per pixel.
+
+pixel_locations <- panel_long %>%
+  distinct(
+    pixel_id,
+    x,
+    y
+  )
+
+
+cat(
+  "Unique pixels:",
+  nrow(pixel_locations),
+  "\n"
+)
+
+
+# ---------------------------------------------------------
+# 2. Convert pixel coordinates to sf POINTS
+# ---------------------------------------------------------
+
+pixel_locations_sf <- st_as_sf(
+  pixel_locations,
+  coords = c("x", "y"),
+  crs = 4326,
+  remove = FALSE
+)
+
+
+# ---------------------------------------------------------
+# 3. Make sure settlement data uses WGS84
+# ---------------------------------------------------------
+
+aze_new <- st_transform(
+  aze_new,
+  4326
+)
+
+
+# ---------------------------------------------------------
+# 4. Transform both datasets to UTM Zone 39N
+# ---------------------------------------------------------
+# EPSG:32639 gives distances in metres.
+
+pixel_locations_utm <- st_transform(
+  pixel_locations_sf,
+  32639
+)
+
+aze_new_utm <- st_transform(
+  aze_new,
+  32639
+)
+
+
+# ---------------------------------------------------------
+# 5. Find nearest settlement for each pixel
+# ---------------------------------------------------------
+
+nearest_settlement_id <- st_nearest_feature(
+  pixel_locations_utm,
+  aze_new_utm
+)
+
+
+# ---------------------------------------------------------
+# 6. Add information about nearest settlement
+# ---------------------------------------------------------
+
+pixel_locations_utm$settlement_name <-
+  aze_new_utm$NAME_AZ[
+    nearest_settlement_id
+  ]
+
+pixel_locations_utm$settlement_type <-
+  aze_new_utm$TYPE_AZ[
+    nearest_settlement_id
+  ]
+
+pixel_locations_utm$settlement_district <-
+  aze_new_utm$STATE_AZ[
+    nearest_settlement_id
+  ]
+
+
+# ---------------------------------------------------------
+# 7. Calculate distance to nearest settlement
+# ---------------------------------------------------------
+# Distance is calculated in metres because both
+# spatial datasets are in EPSG:32639.
+
+pixel_locations_utm$dist_settlement_m <- as.numeric(
+  st_distance(
+    pixel_locations_utm,
+    aze_new_utm[
+      nearest_settlement_id,
+    ],
+    by_element = TRUE
+  )
+)
+
+
+# ---------------------------------------------------------
+# 8. Convert metres to kilometres
+# ---------------------------------------------------------
+
+pixel_locations_utm$dist_settlement_km <-
+  pixel_locations_utm$dist_settlement_m / 1000
+
+
+# ---------------------------------------------------------
+# 8.1. Log distance to nearest settlement
+# ---------------------------------------------------------
+# log(1 + distance) is used so that pixels with
+# zero distance remain defined.
+
+pixel_locations_utm$log_dist_settlement_km <-
+  log(
+    1 + pixel_locations_utm$dist_settlement_km
+  )
+
+
+# ---------------------------------------------------------
+# 9. Create non-spatial settlement information table
+# ---------------------------------------------------------
+
+settlement_info <- pixel_locations_utm %>%
+  st_drop_geometry() %>%
+  select(
+    pixel_id,
+    settlement_name,
+    settlement_type,
+    settlement_district,
+    dist_settlement_m,
+    dist_settlement_km,
+    log_dist_settlement_km
+  )
+
+
+# ---------------------------------------------------------
+# 10. Check settlement information
+# ---------------------------------------------------------
+
+head(settlement_info)
+
+summary(
+  settlement_info$dist_settlement_km
+)
+
+summary(
+  settlement_info$log_dist_settlement_km
+)
+
+table(
+  settlement_info$settlement_type,
+  useNA = "ifany"
+)
+
+
+# ---------------------------------------------------------
+# 11. Merge nearest-settlement information
+#     into panel_long
+# ---------------------------------------------------------
+
+panel_long <- panel_long %>%
+  left_join(
+    settlement_info,
+    by = "pixel_id"
+  )
+
+
+# =========================================================
+# FINAL CHECKS
+# =========================================================
+
+head(panel_long)
+
+dim(panel_long)
+
+
+# Missing nearest settlements
+cat(
+  "Missing settlement assignments:",
+  sum(is.na(panel_long$settlement_name)),
+  "\n"
+)
+
+
+# Distance summary in kilometres
+summary(
+  panel_long$dist_settlement_km
+)
+
+
+# Log distance summary
+summary(
+  panel_long$log_dist_settlement_km
+)
+
+
+# Settlement type distribution
+table(
+  panel_long$settlement_type,
+  useNA = "ifany"
+)
+
+
+# =========================================================
+# CHECK ONE EXAMPLE PIXEL
+# =========================================================
+
+panel_long %>%
+  select(
+    pixel_id,
+    NAME_2,
+    year,
+    ntl,
+    settlement_name,
+    settlement_type,
+    settlement_district,
+    dist_settlement_km,
+    log_dist_settlement_km
+  ) %>%
+  arrange(
+    pixel_id,
+    year
+  ) %>%
+  head(20)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK — DISTANCE TO NEAREST CITY
+# AND MERGE WITH panel_long
+# =========================================================
+
+
+# ---------------------------------------------------------
+# 1. Keep only cities from settlement data
+# ---------------------------------------------------------
+
+cities <- aze_new %>%
+  filter(
+    TYPE_AZ == "şəhər"
+  )
+
+
+cat(
+  "Number of cities:",
+  nrow(cities),
+  "\n"
+)
+
+
+# ---------------------------------------------------------
+# 2. Create unique pixel locations
+# ---------------------------------------------------------
+
+pixel_locations <- panel_long %>%
+  distinct(
+    pixel_id,
+    x,
+    y
+  )
+
+
+cat(
+  "Unique pixels:",
+  nrow(pixel_locations),
+  "\n"
+)
+
+
+# ---------------------------------------------------------
+# 3. Convert pixel coordinates to sf POINTS
+# ---------------------------------------------------------
+
+pixel_locations_sf <- st_as_sf(
+  pixel_locations,
+  coords = c("x", "y"),
+  crs = 4326,
+  remove = FALSE
+)
+
+
+# ---------------------------------------------------------
+# 4. Transform pixels and cities to UTM Zone 39N
+# ---------------------------------------------------------
+
+pixel_locations_utm <- st_transform(
+  pixel_locations_sf,
+  32639
+)
+
+cities_utm <- cities %>%
+  st_transform(
+    32639
+  )
+
+
+# ---------------------------------------------------------
+# 5. Find nearest city for each pixel
+# ---------------------------------------------------------
+
+nearest_city_id <- st_nearest_feature(
+  pixel_locations_utm,
+  cities_utm
+)
+
+
+# ---------------------------------------------------------
+# 6. Add nearest city information
+# ---------------------------------------------------------
+
+pixel_locations_utm$city_name <-
+  cities_utm$NAME_AZ[
+    nearest_city_id
+  ]
+
+pixel_locations_utm$city_district <-
+  cities_utm$STATE_AZ[
+    nearest_city_id
+  ]
+
+
+# ---------------------------------------------------------
+# 7. Calculate distance to nearest city in metres
+# ---------------------------------------------------------
+
+pixel_locations_utm$dist_city_m <- as.numeric(
+  st_distance(
+    pixel_locations_utm,
+    cities_utm[
+      nearest_city_id,
+    ],
+    by_element = TRUE
+  )
+)
+
+
+# ---------------------------------------------------------
+# 8. Distance in kilometres
+# ---------------------------------------------------------
+
+pixel_locations_utm$dist_city_km <-
+  pixel_locations_utm$dist_city_m / 1000
+
+
+# ---------------------------------------------------------
+# 9. Log distance in metres
+# ---------------------------------------------------------
+
+pixel_locations_utm$log_dist_city_m <-
+  log(
+    1 + pixel_locations_utm$dist_city_m
+  )
+
+
+# ---------------------------------------------------------
+# 10. Create city information table
+# ---------------------------------------------------------
+
+city_info <- pixel_locations_utm %>%
+  st_drop_geometry() %>%
+  select(
+    pixel_id,
+    city_name,
+    city_district,
+    dist_city_m,
+    dist_city_km,
+    log_dist_city_m
+  )
+
+
+# ---------------------------------------------------------
+# 11. Check results
+# ---------------------------------------------------------
+
+head(city_info)
+
+summary(
+  city_info$dist_city_m
+)
+
+summary(
+  city_info$dist_city_km
+)
+
+summary(
+  city_info$log_dist_city_m
+)
+
+
+# ---------------------------------------------------------
+# 12. Merge with panel_long
+# ---------------------------------------------------------
+
+panel_long <- panel_long %>%
+  select(
+    -any_of(
+      c(
+        "city_name",
+        "city_district",
+        "dist_city_m",
+        "dist_city_km",
+        "log_dist_city_m"
+      )
+    )
+  ) %>%
+  left_join(
+    city_info,
+    by = "pixel_id"
+  )
+
+
+# =========================================================
+# FINAL CHECKS
+# =========================================================
+
+cat(
+  "Missing city assignments:",
+  sum(is.na(panel_long$city_name)),
+  "\n"
+)
+
+
+summary(
+  panel_long$dist_city_m
+)
+
+summary(
+  panel_long$dist_city_km
+)
+
+summary(
+  panel_long$log_dist_city_m
+)
+
+
+# ---------------------------------------------------------
+# Check example observations
+# ---------------------------------------------------------
+
+panel_long %>%
+  select(
+    pixel_id,
+    NAME_2,
+    year,
+    ntl,
+    city_name,
+    city_district,
+    dist_city_m,
+    dist_city_km,
+    log_dist_city_m
+  ) %>%
+  arrange(
+    pixel_id,
+    year
+  ) %>%
+  head(20)
+```
+
+
+
+
+```{r}
+# =========================================================
+# 1. LOAD ROAD DATA
+# =========================================================
+
+roads <- st_read(
+  here::here(
+    "Data",
+    "Road Data",
+    "hotosm_aze_roads_lines_shp.shp"
+  )
+)
+
+roads <- st_make_valid(roads)
+
+names(roads)
+head(roads)
+
+
+# =========================================================
+# 2. DEFINE EXCLUDED DISTRICTS
+# =========================================================
+
+excluded_districts <- c(
+  "Ağdam",
+  "Ağdərə",
+  "Füzuli",
+  "Cəbrayıl",
+  "Zəngilan",
+  "Qubadlı",
+  "Kəlbəcər",
+  "Laçın",
+  "Şuşa",
+  "Xankəndi",
+  "Xocalı",
+  "Xocavənd",
+  "Tərtər"
+)
+
+
+# =========================================================
+# 3. REMOVE ROADS IN EXCLUDED DISTRICTS
+# =========================================================
+
+# Select excluded district polygons
+excluded_area <- aze_sf %>%
+  filter(
+    Name_AZ %in% excluded_districts
+  ) %>%
+  st_make_valid()
+
+
+# Transform district polygons to road CRS
+excluded_area <- st_transform(
+  excluded_area,
+  st_crs(roads)
+)
+
+
+# Combine excluded districts into one geometry
+excluded_area <- st_union(
+  excluded_area
+)
+
+
+# Remove road portions located inside excluded districts
+roads <- st_difference(
+  roads,
+  excluded_area
+)
+
+
+# Remove empty geometries
+roads <- roads[
+  !st_is_empty(roads),
+]
+
+
+cat(
+  "Road features after exclusion:",
+  nrow(roads),
+  "\n"
+)
+
+
+# =========================================================
+# 4. CLASSIFY ROAD TYPES
+# =========================================================
+
+roads <- roads %>%
+  mutate(
+    road_group = case_when(
+
+      # Major roads
+      highway %in% c(
+        "motorway",
+        "trunk",
+        "primary"
+      ) ~ "major",
+
+      # Secondary roads
+      highway %in% c(
+        "secondary",
+        "tertiary"
+      ) ~ "secondary",
+
+      # Local roads
+      highway %in% c(
+        "residential",
+        "living_street",
+        "service",
+        "unclassified"
+      ) ~ "local",
+
+      # Minor / non-road routes
+      highway %in% c(
+        "track",
+        "path",
+        "footway"
+      ) ~ "minor_nonroad",
+
+      TRUE ~ "other"
+    )
+  )
+
+
+# Check road classification
+roads %>%
+  st_drop_geometry() %>%
+  count(
+    road_group,
+    sort = TRUE
+  )
+
+
+# =========================================================
+# 5. PREPARE ROAD NETWORK FIGURE
+# =========================================================
+
+# Keep only road categories used in the analysis
+roads_map <- roads %>%
+  filter(
+    road_group %in% c(
+      "major",
+      "secondary"
+    )
+  )
+
+
+# Excluded districts for visualization
+excluded_area_map <- aze_sf %>%
+  filter(
+    Name_AZ %in% excluded_districts
+  ) %>%
+  st_make_valid()
+
+
+# Match CRS
+roads_map <- st_transform(
+  roads_map,
+  st_crs(aze_sf)
+)
+
+
+# Azerbaijan outline
+aze_outline <- aze_sf %>%
+  st_make_valid() %>%
+  summarise()
+
+
+# =========================================================
+# 6. PLOT ROAD NETWORK
+# =========================================================
+
+road_figure <- ggplot() +
+
+  # District boundaries
+  geom_sf(
+    data = aze_sf,
+    fill = "grey97",
+    color = "grey75",
+    linewidth = 0.15
+  ) +
+
+  # Major roads
+  geom_sf(
+    data = roads_map %>%
+      filter(
+        road_group == "major"
+      ),
+    aes(
+      color = "Major roads"
+    ),
+    linewidth = 0.55
+  ) +
+
+  # Secondary roads
+  geom_sf(
+    data = roads_map %>%
+      filter(
+        road_group == "secondary"
+      ),
+    aes(
+      color = "Secondary roads"
+    ),
+    linewidth = 0.30
+  ) +
+
+  # Excluded districts
+  geom_sf(
+    data = excluded_area_map,
+    aes(
+      fill = "Excluded conflict-affected districts"
+    ),
+    color = "black",
+    linewidth = 0.20
+  ) +
+
+  # National border
+  geom_sf(
+    data = aze_outline,
+    fill = NA,
+    color = "black",
+    linewidth = 0.50
+  ) +
+
+  # Road colours
+  scale_color_manual(
+    name = "Road category",
+    values = c(
+      "Major roads" = "#D73027",
+      "Secondary roads" = "#4575B4"
+    )
+  ) +
+
+  # Excluded districts
+  scale_fill_manual(
+    name = NULL,
+    values = c(
+      "Excluded conflict-affected districts" = "black"
+    )
+  ) +
+
+  labs(
+    title = "Major and Secondary Road Network in Azerbaijan"
+  ) +
+
+  theme_void() +
+
+  theme(
+    plot.title = element_text(
+      size = 13,
+      face = "bold",
+      hjust = 0.5
+    ),
+
+    legend.position = "right",
+
+    legend.title = element_text(
+      size = 10,
+      face = "bold"
+    ),
+
+    legend.text = element_text(
+      size = 9
+    )
+  )
+
+
+# Show figure
+road_figure
+
+
+# =========================================================
+# 7. SAVE FIGURE FOR WORD
+# =========================================================
+
+dir.create(
+  here::here("Figures"),
+  showWarnings = FALSE
+)
+
+ggsave(
+  filename = here::here(
+    "Figures",
+    "road_network_azerbaijan.png"
+  ),
+  plot = road_figure,
+  width = 20,
+  height = 13,
+  units = "cm",
+  dpi = 300,
+  bg = "white"
+)
+```
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK 27 — GROUP ROAD TYPES
+# =========================================================
+
+roads <- roads %>%
+  mutate(
+    road_group = case_when(
+
+      # Main national highways
+      highway %in% c(
+        "motorway",
+        "trunk",
+        "primary"
+      ) ~ "major",
+
+      # Important regional roads
+      highway %in% c(
+        "secondary",
+        "tertiary"
+      ) ~ "secondary",
+
+      # Local roads
+      highway %in% c(
+        "residential",
+        "living_street",
+        "service",
+        "unclassified"
+      ) ~ "local",
+
+      # Non-road paths
+      highway %in% c(
+        "track",
+        "path",
+        "footway"
+      ) ~ "minor_nonroad",
+
+      TRUE ~ "other"
+    )
+  )
+
+roads %>%
+  st_drop_geometry() %>%
+  count(road_group, sort = TRUE)
+```
+```{r}
+# =========================================================
+# CHUNK 28 — LOAD PANEL AND CREATE PIXEL POINTS
+# =========================================================
+
+pixels_unique <- panel_long %>%
+  distinct(
+    pixel_id,
+    x,
+    y
+  )
+
+
+# Check that pixel_id is unique
+cat(
+  "Unique pixels:",
+  nrow(pixels_unique),
+  "\n"
+)
+
+cat(
+  "Duplicated pixel IDs:",
+  sum(duplicated(pixels_unique$pixel_id)),
+  "\n"
+)
+
+
+pixels_sf <- st_as_sf(
+  pixels_unique,
+  coords = c("x", "y"),
+  crs = 4326,
+  remove = FALSE
+)
+```
+
+
+```{r}
+# =========================================================
+# CHUNK 29 — TRANSFORM TO METRIC CRS
+# =========================================================
+
+pixels_m <- st_transform(pixels_sf, 32639)
+roads_m <- st_transform(roads, 32639)
+```
+
+
+
+```{r}
+# =========================================================
+# CHUNK 30 — DISTANCE TO NEAREST MAJOR AND SECONDARY ROAD
+# =========================================================
+
+major_roads <- roads_m %>%
+  filter(
+    road_group == "major"
+  )
+
+secondary_roads <- roads_m %>%
+  filter(
+    road_group == "secondary"
+  )
+
+
+cat(
+  "Major road features:",
+  nrow(major_roads),
+  "\n"
+)
+
+cat(
+  "Secondary road features:",
+  nrow(secondary_roads),
+  "\n"
+)
+
+
+# ---------------------------------------------------------
+# Distance to nearest major road
+# ---------------------------------------------------------
+
+pixels_m$dist_major_road_m <- as.numeric(
+  st_distance(
+    pixels_m,
+    st_union(major_roads)
+  )
+)
+
+
+# ---------------------------------------------------------
+# Distance to nearest secondary road
+# ---------------------------------------------------------
+
+pixels_m$dist_secondary_road_m <- as.numeric(
+  st_distance(
+    pixels_m,
+    st_union(secondary_roads)
+  )
+)
+
+
+# ---------------------------------------------------------
+# Create road-distance variables
+# ---------------------------------------------------------
+
+road_distance_vars <- pixels_m %>%
+  st_drop_geometry() %>%
+  select(
+    pixel_id,
+    dist_major_road_m,
+    dist_secondary_road_m
+  )
+
+
+# ---------------------------------------------------------
+# Checks
+# ---------------------------------------------------------
+
+summary(
+  road_distance_vars$dist_major_road_m
+)
+
+summary(
+  road_distance_vars$dist_secondary_road_m
+)
+
+
+cat(
+  "Duplicated pixel IDs:",
+  sum(duplicated(road_distance_vars$pixel_id)),
+  "\n"
+)
+```
+
+
+
+```{r}
+# =========================================================
+# CHUNK 31 — MERGE ROAD DISTANCES TO PANEL
+# =========================================================
+
+# Remove old road-distance variables if this chunk
+# has already been run before
+panel_long <- panel_long %>%
+  select(
+    -any_of(
+      c(
+        "dist_major_road_m",
+        "dist_secondary_road_m"
+      )
+    )
+  )
+
+
+# Merge new road-distance variables
+panel_long <- panel_long %>%
+  left_join(
+    road_distance_vars,
+    by = "pixel_id",
+    relationship = "many-to-one"
+  )
+
+
+# ---------------------------------------------------------
+# Final checks
+# ---------------------------------------------------------
+
+summary(
+  panel_long$dist_major_road_m
+)
+
+summary(
+  panel_long$dist_secondary_road_m
+)
+
+
+cat(
+  "Missing major-road distances:",
+  sum(is.na(panel_long$dist_major_road_m)),
+  "\n"
+)
+
+cat(
+  "Missing secondary-road distances:",
+  sum(is.na(panel_long$dist_secondary_road_m)),
+  "\n"
+)
+```
+
+```{r}
+road_distance_vars %>%
+  count(pixel_id) %>%
+  filter(n > 1)
+```
+
+
+
+```{r}
+# =========================================================
+# CHUNK 31B — LOG ROAD DISTANCES
+# =========================================================
+
+panel_long <- panel_long %>%
+  mutate(
+    log_dist_major = log1p(dist_major_road_m),
+    log_dist_secondary = log1p(dist_secondary_road_m)
+  )
+
+summary(panel_long$log_dist_major)
+summary(panel_long$log_dist_secondary)
+```
+
+
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK 32 — SAVE PANEL WITH ROAD DISTANCES
+# =========================================================
+
+saveRDS(
+  panel_long,
+  here::here(
+    "Data",
+    "Clean",
+    "pixel_year_panel_ntl_roads_2013_2020_VIIRS.rds"
+  )
+)
+
+
+
+cat(
+  "Saved:",
+  here::here(
+    "Data",
+    "Clean",
+    "pixel_year_panel_ntl_roads_2013_2020_VIIRS.rds"
+  ),
+  "\n"
+)
+```
+```{r}
+# =========================================================
+# REMOVE PIXELS LOCATED IN EXCLUDED DISTRICTS
+# USING CURRENT OFFICIAL POLYGONS
+# =========================================================
+
+excluded_districts <- c(
+  "Ağdam",
+  "Ağdərə",
+  "Füzuli",
+  "Cəbrayıl",
+  "Zəngilan",
+  "Qubadlı",
+  "Kəlbəcər",
+  "Laçın",
+  "Şuşa",
+  "Xankəndi",
+  "Xocalı",
+  "Xocavənd",
+  "Tərtər"
+)
+
+
+# ---------------------------------------------------------
+# 1. Select excluded district polygons
+# ---------------------------------------------------------
+
+excluded_area <- aze_sf %>%
+  filter(
+    Name_AZ %in% excluded_districts
+  ) %>%
+  st_make_valid()
+
+
+# ---------------------------------------------------------
+# 2. Create unique pixel locations
+# ---------------------------------------------------------
+
+pixel_check <- panel_long %>%
+  distinct(
+    pixel_id,
+    x,
+    y
+  )
+
+
+pixel_check_sf <- st_as_sf(
+  pixel_check,
+  coords = c("x", "y"),
+  crs = 4326,
+  remove = FALSE
+)
+
+
+# ---------------------------------------------------------
+# 3. Make CRS identical
+# ---------------------------------------------------------
+
+excluded_area <- st_transform(
+  excluded_area,
+  st_crs(pixel_check_sf)
+)
+
+
+# ---------------------------------------------------------
+# 4. Determine which pixels fall inside excluded areas
+# ---------------------------------------------------------
+
+inside_excluded <- lengths(
+  st_intersects(
+    pixel_check_sf,
+    excluded_area
+  )
+) > 0
+
+
+excluded_pixel_ids <- pixel_check_sf$pixel_id[
+  inside_excluded
+]
+
+
+cat(
+  "Pixels located inside excluded districts:",
+  length(excluded_pixel_ids),
+  "\n"
+)
+
+
+# ---------------------------------------------------------
+# 5. Remove them from panel_long
+# ---------------------------------------------------------
+
+cat(
+  "Observations before:",
+  nrow(panel_long),
+  "\n"
+)
+
+
+panel_long <- panel_long %>%
+  filter(
+    !pixel_id %in% excluded_pixel_ids
+  )
+
+
+cat(
+  "Observations after:",
+  nrow(panel_long),
+  "\n"
+)
+
+
+cat(
+  "Unique pixels after:",
+  n_distinct(panel_long$pixel_id),
+  "\n"
+)
+```
+
+```{r}
+# =========================================================
+# LARGE DIAGNOSTIC MAP — FINAL PANEL PIXELS
+# =========================================================
+
+final_pixels_test <- panel_long %>%
+  distinct(
+    pixel_id,
+    x,
+    y
+  )
+
+final_pixels_test_sf <- st_as_sf(
+  final_pixels_test,
+  coords = c("x", "y"),
+  crs = 4326,
+  remove = FALSE
+)
+
+
+# Open a large plotting window
+dev.new(
+  width = 14,
+  height = 10
+)
+
+
+# Azerbaijan districts
+plot(
+  st_geometry(aze_sf),
+  col = "white",
+  border = "grey50",
+  lwd = 0.7
+)
+
+
+# Final panel pixels
+plot(
+  st_geometry(final_pixels_test_sf),
+  add = TRUE,
+  pch = 16,
+  cex = 0.20
+)
+
+
+# Excluded district boundaries
+plot(
+  st_geometry(excluded_area),
+  add = TRUE,
+  border = "red",
+  lwd = 3
+)
+```
+
+
+```{r}
+# =========================================================
+# FINAL MAP — NIGHTTIME LIGHTS AND ROAD NETWORK
+# USING FINAL CLEAN panel_long SAMPLE
+# =========================================================
+
+
+# ---------------------------------------------------------
+# 1. Calculate maximum NTL for each FINAL pixel
+#    over 2013–2020
+# ---------------------------------------------------------
+
+ntl_map_data <- panel_long %>%
+  group_by(
+    pixel_id,
+    x,
+    y
+  ) %>%
+  summarise(
+    ntl_max = max(
+      ntl,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  )
+
+
+# ---------------------------------------------------------
+# 2. Log-transform maximum NTL
+# ---------------------------------------------------------
+
+ntl_map_data <- ntl_map_data %>%
+  mutate(
+    ntl_max_log = log1p(ntl_max)
+  )
+
+
+# ---------------------------------------------------------
+# 3. Basic checks
+# ---------------------------------------------------------
+
+cat(
+  "Pixels used in final map:",
+  nrow(ntl_map_data),
+  "\n"
+)
+
+cat(
+  "Duplicated pixel IDs:",
+  sum(duplicated(ntl_map_data$pixel_id)),
+  "\n"
+)
+
+summary(
+  ntl_map_data$ntl_max
+)
+
+summary(
+  ntl_map_data$ntl_max_log
+)
+
+
+# ---------------------------------------------------------
+# 4. Convert final pixel data to sf
+# ---------------------------------------------------------
+
+ntl_map_sf <- st_as_sf(
+  ntl_map_data,
+  coords = c("x", "y"),
+  crs = 4326,
+  remove = FALSE
+)
+
+
+# ---------------------------------------------------------
+# 5. Transform to UTM 39N
+# ---------------------------------------------------------
+
+ntl_map_utm <- st_transform(
+  ntl_map_sf,
+  32639
+)
+
+
+# ---------------------------------------------------------
+# 6. Create raster template
+# ---------------------------------------------------------
+# Use the original VIIRS raster resolution.
+# First transform the original raster to UTM.
+
+ntl_template_utm <- project(
+  ntl_stack[[1]],
+  "EPSG:32639"
+)
+
+
+# ---------------------------------------------------------
+# 7. Rasterize ONLY final panel pixels
+# ---------------------------------------------------------
+
+ntl_max_log_final <- rasterize(
+  vect(ntl_map_utm),
+  ntl_template_utm,
+  field = "ntl_max_log",
+  background = NA
+)
+
+
+# ---------------------------------------------------------
+# 8. Create Azerbaijan outline
+# ---------------------------------------------------------
+
+aze_outline <- aze_sf %>%
+  st_transform(
+    32639
+  ) %>%
+  summarise()
+
+
+# ---------------------------------------------------------
+# 9. Make sure roads are in same CRS
+# ---------------------------------------------------------
+
+major_roads_map <- st_transform(
+  major_roads,
+  32639
+)
+
+secondary_roads_map <- st_transform(
+  secondary_roads,
+  32639
+)
+
+
+# =========================================================
+# 10. SAVE FINAL MAP
+# =========================================================
+
+# Excluded districts for plotting
+excluded_districts <- c(
+  "Ağdam",
+  "Ağdərə",
+  "Füzuli",
+  "Cəbrayıl",
+  "Zəngilan",
+  "Qubadlı",
+  "Kəlbəcər",
+  "Laçın",
+  "Şuşa",
+  "Xankəndi",
+  "Xocalı",
+  "Xocavənd",
+  "Tərtər"
+)
+
+# Select excluded district polygons
+excluded_area_map <- aze_sf %>%
+  filter(Name_AZ %in% excluded_districts) %>%
+  st_make_valid() %>%
+  st_transform(32639)
+
+
+# Check which excluded districts were found
+cat(
+  "Excluded districts found in aze_sf:\n"
+)
+
+cat(
+  unique(excluded_area_map$Name_AZ),
+  sep = "\n"
+)
+
+
+# ---------------------------------------------------------
+# PDF
+# ---------------------------------------------------------
+
+pdf(
+  file = here::here(
+    "Figures",
+    "nighttime_lights_major_roads_2013_2020_VIIRS.pdf"
+  ),
+  width = 8,
+  height = 6
+)
+
+
+par(
+  bg = "white",
+  mar = c(1, 1, 3, 4)
+)
+
+
+# ---------------------------------------------------------
+# 1. Nighttime lights
+# ---------------------------------------------------------
+
+plot(
+  ntl_max_log_final,
+  col = hcl.colors(
+    200,
+    "Inferno"
+  ),
+  axes = FALSE,
+  box = FALSE,
+  plg = list(
+    title = "Log Lights",
+    cex = 0.9
+  ),
+  main = "Maximum Nighttime Lights Values and Road Network (2013–2020)"
+)
+
+
+# ---------------------------------------------------------
+# 2. Secondary roads
+# ---------------------------------------------------------
+
+plot(
+  st_geometry(secondary_roads_map),
+  add = TRUE,
+  col = adjustcolor(
+    "grey70",
+    alpha.f = 0.5
+  ),
+  lwd = 0.3
+)
+
+
+# ---------------------------------------------------------
+# 3. Major roads
+# ---------------------------------------------------------
+
+plot(
+  st_geometry(major_roads_map),
+  add = TRUE,
+  col = "#2C7FB8",
+  lwd = 1
+)
+
+
+# ---------------------------------------------------------
+# 4. EXCLUDED DISTRICTS — DARK BLACK
+# ---------------------------------------------------------
+# This is intentionally plotted AFTER NTL and roads.
+# Therefore excluded areas cover anything underneath.
+
+plot(
+  st_geometry(excluded_area_map),
+  add = TRUE,
+  col = "grey10",
+  border = "black",
+  lwd = 0.5
+)
+
+
+# ---------------------------------------------------------
+# 5. Azerbaijan national outline
+# ---------------------------------------------------------
+
+plot(
+  st_geometry(aze_outline),
+  add = TRUE,
+  border = "black",
+  lwd = 0.6
+)
+
+
+# ---------------------------------------------------------
+# 6. Legend
+# ---------------------------------------------------------
+
+legend(
+  "topright",
+  legend = c(
+    "Major roads",
+    "Secondary roads",
+    "Excluded districts"
+  ),
+  col = c(
+    "#2C7FB8",
+    "grey70",
+    "grey10"
+  ),
+  lwd = c(
+    1.4,
+    0.5,
+    8
+  ),
+  bty = "n",
+  cex = 0.8
+)
+
+
+dev.off()
+```
+
+
+
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK 33 — LOAD OIL DATA
+# =========================================================
+
+excel_sheets(
+  here::here(
+    "Data",
+    "CMO-Historical-Data-Annual.xlsx"
+  )
+)
+
+# -----------------------------
+# Nominal prices
+# -----------------------------
+oil_nominal <- read_excel(
+  here::here(
+    "Data",
+    "CMO-Historical-Data-Annual.xlsx"
+  ),
+  sheet = "Annual Prices (Nominal)",
+  skip = 6
+)
+
+# -----------------------------
+# Real prices (2010 US$)
+# -----------------------------
+oil_real <- read_excel(
+  here::here(
+    "Data",
+    "CMO-Historical-Data-Annual.xlsx"
+  ),
+  sheet = "Annual Prices (Real)",
+  skip = 6
+)
+
+# Check
+dim(oil_nominal)
+dim(oil_real)
+
+names(oil_nominal)
+names(oil_real)
+
+head(oil_nominal)
+head(oil_real)
+
+```
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK 34 — CLEAN BRENT OIL PRICE DATA
+# =========================================================
+oil <- oil_nominal %>%
+  select(
+    year = ...1,
+    oil_price_brent_nominal = `Crude oil, Brent`
+  ) %>%
+  left_join(
+    oil_real %>%
+      select(
+        year = ...1,
+        oil_price_brent_real = `Crude oil, Brent`
+      ),
+    by = "year"
+  ) %>%
+  mutate(
+    year = as.numeric(year),
+    oil_price_brent_nominal = as.numeric(oil_price_brent_nominal),
+    oil_price_brent_real = as.numeric(oil_price_brent_real)
+  ) %>%
+  filter(
+    year >= 2013,
+    year <= 2020
+  )
+
+oil
+```
+
+```{r}
+# =========================================================
+# CHUNK 35 — MERGE OIL PRICE TO PANEL
+# =========================================================
+
+
+panel_long <- panel_long %>%
+  left_join(oil, by = "year")
+
+summary(panel_long$oil_price_brent_nominal)
+
+table(is.na(panel_long$oil_price_brent_real))
+
+saveRDS(
+  panel_long,
+  here::here(
+    "Data",
+    "Clean",
+    "pixel_year_panel_ntl_roads_oil_2013_2020_VIIRS.rds"
+  )
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+# =========================================================
+# CHUNK 42 — PIXEL DISTANCE TO BAKU
+# PANEL_LONG — DISTANCE IN METERS
+# =========================================================
+
+
+# ---------------------------------------------------------
+# 1. Baku reference coordinates
+# ---------------------------------------------------------
+# Longitude, latitude
+
+baku <- c(
+  49.8671,
+  40.4093
+)
+
+
+# ---------------------------------------------------------
+# 2. Create UNIQUE pixel locations
+# ---------------------------------------------------------
+# IMPORTANT:
+# Distance is time-invariant.
+# Therefore calculate it only once for each pixel,
+# not separately for every year.
+
+pixel_baku_distance <- panel_long %>%
+
+  distinct(
+    pixel_id,
+    x,
+    y
+  )
+
+
+# ---------------------------------------------------------
+# 3. Check unique pixels
+# ---------------------------------------------------------
+
+cat(
+  "Unique pixels:",
+  nrow(pixel_baku_distance),
+  "\n"
+)
+
+cat(
+  "Duplicated pixel IDs:",
+  sum(duplicated(pixel_baku_distance$pixel_id)),
+  "\n"
+)
+
+
+# ---------------------------------------------------------
+# 4. Calculate distance from each pixel to Baku
+#    DISTANCE IN METERS
+# ---------------------------------------------------------
+
+pixel_baku_distance <- pixel_baku_distance %>%
+
+  mutate(
+
+    dist_baku_m = geosphere::distHaversine(
+
+      cbind(
+        x,
+        y
+      ),
+
+      baku
+    ),
+
+    # Log distance in meters
+    log_dist_baku = log1p(
+      dist_baku_m
+    )
+  )
+
+
+# ---------------------------------------------------------
+# 5. Check distance distribution
+# ---------------------------------------------------------
+
+cat(
+  "\nPixel distance to Baku — meters:\n"
+)
+
+summary(
+  pixel_baku_distance$dist_baku_m
+)
+
+
+cat(
+  "\nLog pixel distance to Baku:\n"
+)
+
+summary(
+  pixel_baku_distance$log_dist_baku
+)
+
+
+# ---------------------------------------------------------
+# 6. Add distance variables to panel_long
+# ---------------------------------------------------------
+
+panel_long <- panel_long %>%
+
+  # Remove old versions if this chunk is rerun
+  select(
+    -any_of(
+      c(
+        "dist_baku_km",
+        "dist_baku_m",
+        "log_dist_baku"
+      )
+    )
+  ) %>%
+
+  left_join(
+
+    pixel_baku_distance %>%
+      select(
+        pixel_id,
+        dist_baku_m,
+        log_dist_baku
+      ),
+
+    by = "pixel_id",
+    relationship = "many-to-one"
+  )
+
+
+# ---------------------------------------------------------
+# 7. FINAL CHECKS
+# ---------------------------------------------------------
+
+cat(
+  "\nTotal panel observations:",
+  nrow(panel_long),
+  "\n"
+)
+
+cat(
+  "Unique pixels:",
+  n_distinct(panel_long$pixel_id),
+  "\n"
+)
+
+cat(
+  "Missing distance values:",
+  sum(is.na(panel_long$dist_baku_m)),
+  "\n"
+)
+
+
+# ---------------------------------------------------------
+# 8. Check first observations
+# ---------------------------------------------------------
+
+panel_long %>%
+
+  select(
+    pixel_id,
+    year,
+    x,
+    y,
+    NAME_2,
+    dist_baku_m,
+    log_dist_baku
+  ) %>%
+
+  arrange(
+    pixel_id,
+    year
+  ) %>%
+
+  head(20)
+
+
+# ---------------------------------------------------------
+# 9. Check that distance is constant across years
+#    for every pixel
+# ---------------------------------------------------------
+
+distance_check <- panel_long %>%
+
+  group_by(
+    pixel_id
+  ) %>%
+
+  summarise(
+
+    n_distances = n_distinct(
+      dist_baku_m
+    ),
+
+    .groups = "drop"
+  ) %>%
+
+  filter(
+    n_distances != 1
+  )
+
+
+cat(
+  "\nPixels with inconsistent distance across years:",
+  nrow(distance_check),
+  "\n"
+)
+
+
+# ---------------------------------------------------------
+# 10. SAVE UPDATED PANEL
+# ---------------------------------------------------------
+
+saveRDS(
+  panel_long,
+  here(
+    "Data",
+    "Clean",
+    "panel_long_final_2013_2020_VIIRS.rds"
+  )
+)
+
+cat(
+  "\nPixel panel with distance to Baku saved successfully.\n"
+)
+```
+
+
+
+
+
+
+
+
+
+```{r}
+# =========================================================
+# DESCRIPTIVE STATISTICS
+# =========================================================
+
+
+# ---------------------------------------------------------
+# 1. PIXEL-LEVEL DESCRIPTIVE STATISTICS
+# ---------------------------------------------------------
+
+desc_data <- panel_long %>%
+  select(
+    `NTL` = ntl,
+    `Log(NTL+1)` = log_ntl,
+    `Brent oil price nominal` = oil_price_brent_nominal,
+    `Brent oil price real` = oil_price_brent_real,
+    `Distance to Baku (m)` = dist_baku_m,
+    `Distance to major road (m)` = dist_major_road_m,
+    `Distance to secondary road (m)` = dist_secondary_road_m
+  )
+
+
+dir.create(
+  here("Figures"),
+  showWarnings = FALSE
+)
+
+
+datasummary(
+  All(desc_data) ~
+    (
+      N +
+      Mean +
+      SD +
+      Min +
+      Median +
+      Max
+    ),
+  
+  data = desc_data,
+  fmt = 1,
+  
+  output = here(
+    "Figures",
+    "descriptive_statistics.tex"
+  )
+)
+
+
+
+# ---------------------------------------------------------
+# 2. DISTRICT-LEVEL DESCRIPTIVE STATISTICS
+# ---------------------------------------------------------
+
+
+```
+
+
+```{r} 
+# =========================================================
+#  MAIN SPECIFICATION
+# =========================================================
+
+rf_main <- feols(
+  log_ntl ~
+    oil_price_brent_real:log_dist_baku |
+    NAME_2 + year,
+  data = panel_long,
+  cluster = ~NAME_2
+)
+
+summary(rf_main)
+```
+
+```{r}
+# =========================================================
+# REDUCED FORM — ROAD CONTROLS
+# =========================================================
+
+
+panel_long <- panel_long %>%
+  mutate(
+    dist_settlement_m = dist_settlement_km * 1000,
+    log_dist_settlement_m = log1p(dist_settlement_m)
+  )
+
+rf_roads_settlement <- feols(
+  log_ntl ~
+    oil_price_brent_real:log_dist_baku +
+    log_dist_major +
+    log_dist_secondary +
+    log_dist_settlement_m |
+    NAME_2 + year,
+  data = panel_long,
+  cluster = ~NAME_2
+)
+
+summary(rf_roads_settlement)
+```
+
+```{r}
+# =========================================================
+# REGRESSION WITH ACADEMIC VARIABLE LABELS
+# =========================================================
+
+rf_roads_settlement_type <- feols(
+  log_ntl ~
+    oil_price_brent_real:log_dist_baku +
+    log_dist_major +
+    log_dist_secondary +
+    log_dist_settlement_m +
+    i(settlement_type) |
+    NAME_2 + year,
+  data = panel_long,
+  cluster = ~NAME_2
+)
+
+
+# -----------------------------------------
+# Academic variable names
+# -----------------------------------------
+
+academic_names <- c(
+  "log_dist_major" =
+    "Log distance to nearest major road",
+
+  "log_dist_secondary" =
+    "Log distance to nearest secondary road",
+
+  "log_dist_settlement_m" =
+    "Log distance to nearest settlement",
+
+  "settlement_type::qəsəbə" =
+    "Nearest settlement: Town",
+
+  "settlement_type::şəhər" =
+    "Nearest settlement: City",
+
+  "oil_price_brent_real:log_dist_baku" =
+    "Real Brent oil price × Log distance to Baku"
+)
+
+
+# -----------------------------------------
+# Display regression table
+# -----------------------------------------
+
+etable(
+  rf_roads_settlement_type,
+  dict = academic_names,
+  digits = 3,
+  se.below = TRUE,
+  fitstat = c(
+    "n",
+    "r2",
+    "ar2",
+    "wr2"
+  )
+)
+```
+```{r}
+# =========================================================
+# EXTENDED SPECIFICATION — CITY AND ROAD CONTROLS
+# =========================================================
+
+rf_roads_settlement_type <- feols(
+  log_ntl ~
+    oil_price_brent_real:log_dist_baku +
+    log_dist_city_m +
+    log_dist_major |
+    NAME_2 + year,
+  data = panel_long,
+  cluster = ~NAME_2
+)
+
+summary(rf_roads_settlement_type)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+
+# =========================================================
+# ROBUSTNESS CHECK — EXCLUDING BAKU
+# =========================================================
+
+baku_districts <- c(
+  "Binəqədi", "Nərimanov", "Nəsimi", "Nizami",
+  "Pirallahı", "Qaradağ", "Sabunçu", "Səbail",
+  "Suraxanı", "Xətai", "Xəzər", "Yasamal"
+)
+
+panel_no_baku <- panel_long %>%
+  filter(!NAME_2 %in% baku_districts)
+
+
+rf_no_baku <- feols(
+  log_ntl ~
+    oil_price_brent_real:log_dist_baku +
+    log_dist_major +
+    log_dist_secondary |
+    NAME_2 + year,
+  data = panel_no_baku,
+  cluster = ~NAME_2
+)
+
+summary(rf_no_baku)
+```
+
+
+
+
+```{r}
+# =========================================================
+# ROBUSTNESS — PIXEL FIXED EFFECTS
+# =========================================================
+
+rf_compare <- feols(
+  log_ntl ~
+    oil_price_brent_real:log_dist_baku |
+    pixel_id + year,
+  data = panel_long,
+  cluster = ~NAME_2
+)
+
+summary(rf_compare)
+```
+
+```{r}
+# 1. Pixel-year variables
+desc_ntl <- panel_long %>%
+  select(
+    `Nighttime light intensity` = ntl,
+    `Log(1 + NTL)` = log_ntl
+  ) %>%
+  tidyr::pivot_longer(
+    everything(),
+    names_to = "Variable",
+    values_to = "Value"
+  ) %>%
+  group_by(Variable) %>%
+  summarise(
+    N = sum(!is.na(Value)),
+    Mean = mean(Value, na.rm = TRUE),
+    SD = sd(Value, na.rm = TRUE),
+    Min = min(Value, na.rm = TRUE),
+    Median = median(Value, na.rm = TRUE),
+    Max = max(Value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+# 2. Oil price — one observation per year
+desc_oil <- panel_long %>%
+  distinct(year, oil_price_brent_real) %>%
+  transmute(
+    Variable = "Real Brent oil price (USD/barrel)",
+    Value = oil_price_brent_real
+  ) %>%
+  group_by(Variable) %>%
+  summarise(
+    N = sum(!is.na(Value)),
+    Mean = mean(Value, na.rm = TRUE),
+    SD = sd(Value, na.rm = TRUE),
+    Min = min(Value, na.rm = TRUE),
+    Median = median(Value, na.rm = TRUE),
+    Max = max(Value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+# 3. Spatial variables — one observation per unique pixel
+desc_spatial <- panel_long %>%
+  distinct(
+    pixel_id,
+    dist_baku_m,
+    dist_major_road_m,
+    dist_secondary_road_m,
+    dist_settlement_m
+  ) %>%
+  transmute(
+    `Distance to Baku (km)` = dist_baku_m / 1000,
+    `Distance to major road (km)` = dist_major_road_m / 1000,
+    `Distance to secondary road (km)` = dist_secondary_road_m / 1000,
+    `Distance to nearest settlement (km)` = dist_settlement_m / 1000
+  ) %>%
+  tidyr::pivot_longer(
+    everything(),
+    names_to = "Variable",
+    values_to = "Value"
+  ) %>%
+  group_by(Variable) %>%
+  summarise(
+    N = sum(!is.na(Value)),
+    Mean = mean(Value, na.rm = TRUE),
+    SD = sd(Value, na.rm = TRUE),
+    Min = min(Value, na.rm = TRUE),
+    Median = median(Value, na.rm = TRUE),
+    Max = max(Value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+# 4. Combine tables
+desc_table <- bind_rows(
+  desc_ntl,
+  desc_oil,
+  desc_spatial
+) %>%
+  mutate(
+    across(c(Mean, SD, Min, Median, Max), ~round(., 2))
+  )
+
+
+# 5. Display
+desc_table
+
+knitr::kable(
+  desc_table,
+  caption = "Descriptive Statistics",
+  digits = 2,
+  align = c("l", "r", "r", "r", "r", "r", "r")
+)
+```
+
+
+
+
+
+```{r}
+quantile(
+  panel_long$ntl,
+  probs = c(0.50, 0.90, 0.95, 0.99, 0.999, 0.9999, 1),
+  na.rm = TRUE
+)
+```
+```{r}
+panel_long %>%
+  summarise(
+    total = n(),
+    above_50 = sum(ntl > 50, na.rm = TRUE),
+    above_100 = sum(ntl > 100, na.rm = TRUE),
+    above_500 = sum(ntl > 500, na.rm = TRUE),
+    above_1000 = sum(ntl > 1000, na.rm = TRUE),
+    share_above_100 = mean(ntl > 100, na.rm = TRUE) * 100
+  )
+```
+
