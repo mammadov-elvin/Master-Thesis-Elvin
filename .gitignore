@@ -1,8 +1,21 @@
-Data/**/*.dbf
-tinytable_assets/
-Output/
-
-
+# RStudio
+.Rproj.user/
 .Rhistory
 .RData
-.Rproj.user
+.Ruserdata
+
+# RStudio temporary files
+*.Rproj.user
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Environment / secrets
+.env
+tinytable_assets/
