@@ -19,8 +19,14 @@ date: "2026-04-27"
 # CHUNK 1 — PACKAGES
 # =========================================================
 
+options(
+  repos = c(CRAN = "https://cloud.r-project.org"),
+  timeout = 600
+)
+
 packages <- c(
   "terra",
+  "flextable",
   "sf",
   "dplyr",
   "ggplot2",
@@ -30,21 +36,34 @@ packages <- c(
   "readxl",
   "stringr",
   "fixest",
-  "here", 
-  "geosphere", 
+  "here",
+  "geosphere",
   "modelsummary",
-  "ggrepel", 
+  "ggrepel",
   "tinytable",
   "knitr"
 )
 
-new_packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+new_packages <- packages[
+  !vapply(
+    packages,
+    requireNamespace,
+    logical(1),
+    quietly = TRUE
+  )
+]
 
-if(length(new_packages))
+if (length(new_packages) > 0) {
   install.packages(new_packages)
+}
 
-invisible(lapply(packages, library, character.only = TRUE))
-
+invisible(
+  lapply(
+    packages,
+    library,
+    character.only = TRUE
+  )
+)
 
 ```
 
