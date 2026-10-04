@@ -16,7 +16,7 @@ date: "2026-04-27"
 ---
 ```{r}
 # =========================================================
-# CHUNK 1 — PACKAGES
+# CHUNK 1 — INSTALL AND LOAD REQUIRED PACKAGES
 # =========================================================
 
 options(
@@ -26,6 +26,7 @@ options(
 
 packages <- c(
   "terra",
+  "flextable",
   "sf",
   "dplyr",
   "ggplot2",
@@ -43,7 +44,11 @@ packages <- c(
   "knitr"
 )
 
-new_packages <- packages[
+# ---------------------------------------------------------
+# Install packages that are not available
+# ---------------------------------------------------------
+
+missing_packages <- packages[
   !vapply(
     packages,
     requireNamespace,
@@ -52,9 +57,44 @@ new_packages <- packages[
   )
 ]
 
-if (length(new_packages) > 0) {
-  install.packages(new_packages)
+if (length(missing_packages) > 0) {
+
+  message(
+    "Installing missing packages: ",
+    paste(missing_packages, collapse = ", ")
+  )
+
+  install.packages(
+    missing_packages,
+    dependencies = TRUE
+  )
 }
+
+# ---------------------------------------------------------
+# Check that installation was successful
+# ---------------------------------------------------------
+
+still_missing <- packages[
+  !vapply(
+    packages,
+    requireNamespace,
+    logical(1),
+    quietly = TRUE
+  )
+]
+
+if (length(still_missing) > 0) {
+
+  stop(
+    "The following packages could not be installed: ",
+    paste(still_missing, collapse = ", "),
+    "\nPlease install them manually before continuing."
+  )
+}
+
+# ---------------------------------------------------------
+# Load all packages
+# ---------------------------------------------------------
 
 invisible(
   lapply(
@@ -63,6 +103,8 @@ invisible(
     character.only = TRUE
   )
 )
+
+message("All required packages are installed and loaded successfully.")
 
 ```
 
