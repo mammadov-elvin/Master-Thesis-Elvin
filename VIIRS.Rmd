@@ -3339,6 +3339,136 @@ etable(
   )
 )
 ```
+
+
+
+
+```{r}
+# =========================================================
+# DISTRICTS ORDERED BY PROXIMITY TO BAKU
+# =========================================================
+# =========================================================
+# checking the districts in Baku
+# =========================================================
+
+districts_by_baku_distance <- panel_long %>%
+  distinct(
+    pixel_id,
+    NAME_2,
+    dist_baku_m
+  ) %>%
+  group_by(NAME_2) %>%
+  summarise(
+    min_dist_baku_km = min(dist_baku_m, na.rm = TRUE) / 1000,
+    mean_dist_baku_km = mean(dist_baku_m, na.rm = TRUE) / 1000,
+    .groups = "drop"
+  ) %>%
+  arrange(min_dist_baku_km)
+
+districts_by_baku_distance
+```
+
+```{r}
+# =========================================================
+# ROBUSTNESS CHECK — EXCLUDING districts of Baku
+# =========================================================
+
+
+# Areas excluded from the robustness sample
+baku_districts <- c(
+  "Binəqədi",
+  "Nərimanov",
+  "Nəsimi",
+  "Nizami",
+  "Xətai",
+  "Pirallahı",
+  "Qaradağ",
+  "Sabunçu",
+  "Səbail",
+  "Suraxanı",
+  "Xəzər",
+  "Yasamal")
+
+
+# ---------------------------------------------------------
+# Exclude pixels located in these areas
+# ---------------------------------------------------------
+
+panel_no_baku <- panel_long %>%
+  filter(
+    !NAME_2 %in% baku_districts
+  )
+
+
+# ---------------------------------------------------------
+# Check exclusions
+# ---------------------------------------------------------
+
+cat(
+  "Observations before exclusion:",
+  nrow(panel_long),
+  "\n"
+)
+
+cat(
+  "Observations after exclusion:",
+  nrow(panel_no_baku),
+  "\n"
+)
+
+cat(
+  "Remaining districts:",
+  n_distinct(panel_no_baku$NAME_2),
+  "\n"
+)
+
+# Should return character(0)
+intersect(
+  baku_districts,
+  unique(panel_no_baku$NAME_2)
+)
+
+
+# ---------------------------------------------------------
+# Robustness regression
+# ---------------------------------------------------------
+
+rf_no_baku <- feols(
+  log_ntl ~
+    oil_price_brent_real:log_dist_baku +
+    log_dist_city_m +
+    log_dist_major |
+    NAME_2 + year,
+  data = panel_no_baku,
+  cluster = ~NAME_2
+)
+
+
+# ---------------------------------------------------------
+# Results
+# ---------------------------------------------------------
+
+summary(rf_no_baku)
+```
+
+```{r}
+# =========================================================
+# ROBUSTNESS CHECK — ALTERNATIVE SETTLEMENT CONTROL
+# =========================================================
+
+rf_alt_settlement <- feols(
+  log_ntl ~
+    oil_price_brent_real:log_dist_baku +
+    i(settlement_type) |
+    NAME_2 + year,
+  data = panel_long,
+  cluster = ~NAME_2
+)
+
+summary(rf_alt_settlement)
+```
+
+
 ```{r}
 # =========================================================
 # EXTENDED SPECIFICATION — CITY AND ROAD CONTROLS
@@ -3360,66 +3490,194 @@ summary(rf_roads_settlement_type)
 
 
 
-
-
-
-
-
-
-
-
-
 ```{r}
-
-
 # =========================================================
-# ROBUSTNESS CHECK — EXCLUDING BAKU
+# REGRESSION TABLE — MAIN AND ROBUSTNESS RESULTS
 # =========================================================
 
-baku_districts <- c(
-  "Binəqədi", "Nərimanov", "Nəsimi", "Nizami",
-  "Pirallahı", "Qaradağ", "Sabunçu", "Səbail",
-  "Suraxanı", "Xətai", "Xəzər", "Yasamal"
+
+
+
+# ---------------------------------------------------------
+# 1. Models
+# ---------------------------------------------------------
+
+models <- list(
+  "(1) Baseline" = rf_main,
+  "(2) Extended" = rf_roads_settlement_type,
+  "(3) Alternative\nsettlement control" = rf_alt_settlement,
+  "(4) Excluding\nBaku" = rf_no_baku
 )
 
-panel_no_baku <- panel_long %>%
-  filter(!NAME_2 %in% baku_districts)
 
+# ---------------------------------------------------------
+# 2. Rename coefficients and determine their order
+# ---------------------------------------------------------
 
-rf_no_baku <- feols(
-  log_ntl ~
-    oil_price_brent_real:log_dist_baku +
-    log_dist_major +
-    log_dist_secondary |
-    NAME_2 + year,
-  data = panel_no_baku,
-  cluster = ~NAME_2
+coef_names <- c(
+  "oil_price_brent_real:log_dist_baku" =
+    "Real Brent oil price × log distance to Baku",
+
+  "log_dist_city_m" =
+    "Log distance to nearest city",
+
+  "log_dist_major" =
+    "Log distance to major road",
+
+  "settlement_type::qəsəbə" =
+    "Nearest settlement: Town",
+
+  "settlement_type::şəhər" =
+    "Nearest settlement: City"
 )
 
-summary(rf_no_baku)
+
+# ---------------------------------------------------------
+# 3. Additional information below coefficients
+# ---------------------------------------------------------
+
+extra_rows <- data.frame(
+  term = c(
+    "District fixed effects",
+    "Year fixed effects",
+    "Spatial controls",
+    "Sample"
+  ),
+
+  "(1) Baseline" = c(
+    "Yes",
+    "Yes",
+    "No",
+    "Full sample"
+  ),
+
+  "(2) Extended" = c(
+    "Yes",
+    "Yes",
+    "City + major road",
+    "Full sample"
+  ),
+
+  "(3) Alternative\nsettlement control" = c(
+    "Yes",
+    "Yes",
+    "Settlement type",
+    "Full sample"
+  ),
+
+  "(4) Excluding\nBaku" = c(
+    "Yes",
+    "Yes",
+    "City + major road",
+    "Excluding Baku"
+  ),
+
+  check.names = FALSE
+)
+
+
+# ---------------------------------------------------------
+# 4. Create regression table
+# ---------------------------------------------------------
+
+reg_table <- modelsummary(
+  models,
+
+  coef_map = coef_names,
+
+  statistic = "({std.error})",
+
+  fmt = 5,
+
+  stars = c(
+    "*"   = 0.10,
+    "**"  = 0.05,
+    "***" = 0.01
+  ),
+
+  gof_map = c(
+    "nobs",
+    "r.squared",
+    "adj.r.squared"
+  ),
+
+  add_rows = extra_rows,
+
+  notes = c(
+    "Clustered standard errors at the district level are reported in parentheses.",
+    "* p < 0.10, ** p < 0.05, *** p < 0.01.",
+    "Village is the reference category for the settlement-type specification."
+  ),
+
+  output = "flextable"
+)
+
+# ---------------------------------------------------------
+# 5. Academic formatting
+# ---------------------------------------------------------
+
+reg_table <- reg_table %>%
+  flextable::theme_booktabs() %>%
+  flextable::autofit() %>%
+  flextable::align(
+    align = "center",
+    part = "all"
+  ) %>%
+  flextable::align(
+    j = 1,
+    align = "left",
+    part = "all"
+  ) %>%
+  flextable::fontsize(
+    size = 9,
+    part = "all"
+  ) %>%
+  flextable::bold(
+    part = "header"
+  )
+
+
+# ---------------------------------------------------------
+# 6. Display table
+# ---------------------------------------------------------
+
+reg_table
+
 ```
 
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ```{r}
 # =========================================================
-# ROBUSTNESS — PIXEL FIXED EFFECTS
+# DESCRIPTIVE STATISTICS — FINAL SPECIFICATION
 # =========================================================
 
-rf_compare <- feols(
-  log_ntl ~
-    oil_price_brent_real:log_dist_baku |
-    pixel_id + year,
-  data = panel_long,
-  cluster = ~NAME_2
-)
 
-summary(rf_compare)
-```
-
-```{r}
+# ---------------------------------------------------------
 # 1. Pixel-year variables
+# ---------------------------------------------------------
+
 desc_ntl <- panel_long %>%
   select(
     `Nighttime light intensity` = ntl,
@@ -3442,9 +3700,15 @@ desc_ntl <- panel_long %>%
   )
 
 
+# ---------------------------------------------------------
 # 2. Oil price — one observation per year
+# ---------------------------------------------------------
+
 desc_oil <- panel_long %>%
-  distinct(year, oil_price_brent_real) %>%
+  distinct(
+    year,
+    oil_price_brent_real
+  ) %>%
   transmute(
     Variable = "Real Brent oil price (USD/barrel)",
     Value = oil_price_brent_real
@@ -3461,20 +3725,21 @@ desc_oil <- panel_long %>%
   )
 
 
+# ---------------------------------------------------------
 # 3. Spatial variables — one observation per unique pixel
+# ---------------------------------------------------------
+
 desc_spatial <- panel_long %>%
   distinct(
     pixel_id,
     dist_baku_m,
-    dist_major_road_m,
-    dist_secondary_road_m,
-    dist_settlement_m
+    dist_city_m,
+    dist_major_road_m
   ) %>%
   transmute(
     `Distance to Baku (km)` = dist_baku_m / 1000,
-    `Distance to major road (km)` = dist_major_road_m / 1000,
-    `Distance to secondary road (km)` = dist_secondary_road_m / 1000,
-    `Distance to nearest settlement (km)` = dist_settlement_m / 1000
+    `Distance to nearest city (km)` = dist_city_m / 1000,
+    `Distance to major road (km)` = dist_major_road_m / 1000
   ) %>%
   tidyr::pivot_longer(
     everything(),
@@ -3493,25 +3758,37 @@ desc_spatial <- panel_long %>%
   )
 
 
+# ---------------------------------------------------------
 # 4. Combine tables
+# ---------------------------------------------------------
+
 desc_table <- bind_rows(
   desc_ntl,
   desc_oil,
   desc_spatial
 ) %>%
   mutate(
-    across(c(Mean, SD, Min, Median, Max), ~round(., 2))
+    across(
+      c(Mean, SD, Min, Median, Max),
+      ~ round(., 2)
+    )
   )
 
 
+# ---------------------------------------------------------
 # 5. Display
+# ---------------------------------------------------------
+
 desc_table
+
 
 knitr::kable(
   desc_table,
   caption = "Descriptive Statistics",
   digits = 2,
-  align = c("l", "r", "r", "r", "r", "r", "r")
+  align = c(
+    "l", "r", "r", "r", "r", "r", "r"
+  )
 )
 ```
 
@@ -3536,5 +3813,326 @@ panel_long %>%
     above_1000 = sum(ntl > 1000, na.rm = TRUE),
     share_above_100 = mean(ntl > 100, na.rm = TRUE) * 100
   )
+```
+```{r}
+# =========================================================
+# COEFFICIENT PLOT — OIL PRICE × DISTANCE TO BAKU
+# =========================================================
+
+# ---------------------------------------------------------
+# 1. Function to extract main interaction coefficient
+# ---------------------------------------------------------
+
+extract_interaction <- function(model, model_name) {
+
+  ct <- coeftable(model)
+
+  estimate <- ct[
+    "oil_price_brent_real:log_dist_baku",
+    "Estimate"
+  ]
+
+  std_error <- ct[
+    "oil_price_brent_real:log_dist_baku",
+    "Std. Error"
+  ]
+
+  data.frame(
+    Model = model_name,
+    Estimate = estimate,
+    SE = std_error,
+    CI_low = estimate - 1.96 * std_error,
+    CI_high = estimate + 1.96 * std_error
+  )
+}
+
+
+# ---------------------------------------------------------
+# 2. Combine results
+# ---------------------------------------------------------
+
+coef_plot_data <- bind_rows(
+
+  extract_interaction(
+    rf_main,
+    "Baseline"
+  ),
+
+  extract_interaction(
+    rf_roads_settlement_type,
+    "Extended"
+  ),
+
+  extract_interaction(
+    rf_alt_settlement,
+    "Alternative settlement control"
+  ),
+
+  extract_interaction(
+    rf_no_baku,
+    "Excluding Baku"
+  )
+)
+
+
+# ---------------------------------------------------------
+# 3. Order specifications
+# ---------------------------------------------------------
+
+coef_plot_data$Model <- factor(
+  coef_plot_data$Model,
+  levels = c(
+    "Baseline",
+    "Extended",
+    "Alternative settlement control",
+    "Excluding Baku"
+  )
+)
+
+
+# ---------------------------------------------------------
+# 4. Create coefficient plot
+# ---------------------------------------------------------
+
+interaction_plot <- ggplot(
+  coef_plot_data,
+  aes(
+    x = Estimate,
+    y = Model
+  )
+) +
+
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.6
+  ) +
+
+  geom_errorbar(
+    aes(
+      xmin = CI_low,
+      xmax = CI_high
+    ),
+    width = 0.15,
+    linewidth = 0.7
+  ) +
+
+  geom_point(
+    size = 3
+  ) +
+
+  labs(
+    title = "Oil Price × Distance to Baku Across Specifications",
+    subtitle = "Coefficient estimates with 95% confidence intervals",
+    x = "Estimated interaction coefficient",
+    y = NULL
+  ) +
+
+  scale_x_continuous(
+    labels = scales::label_number(
+      accuracy = 0.0001
+    )
+  ) +
+
+  theme_minimal(
+    base_size = 11
+  ) +
+
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    ),
+
+    plot.subtitle = element_text(
+      hjust = 0.5
+    )
+  )
+
+
+# ---------------------------------------------------------
+# 5. Display
+# ---------------------------------------------------------
+
+interaction_plot
+
+
+# ---------------------------------------------------------
+# 6. Save
+# ---------------------------------------------------------
+
+ggsave(
+  filename = here(
+    "Figures",
+    "oil_price_distance_coefficient_plot.png"
+  ),
+  plot = interaction_plot,
+  width = 17,
+  height = 10,
+  units = "cm",
+  dpi = 300,
+  bg = "white"
+)
+```
+```{r}
+# =========================================================
+# FIGURE — FINAL ANALYSIS SAMPLE / ELIGIBLE PIXELS
+# =========================================================
+
+
+# ---------------------------------------------------------
+# 1. Unique pixels in final analysis sample
+# ---------------------------------------------------------
+
+eligible_pixels <- panel_long %>%
+  distinct(
+    pixel_id,
+    x,
+    y
+  )
+
+cat(
+  "Eligible pixels in final sample:",
+  nrow(eligible_pixels),
+  "\n"
+)
+
+
+# ---------------------------------------------------------
+# 2. Administrative boundaries
+# ---------------------------------------------------------
+
+aze_sample_map <- aze_sf %>%
+  st_make_valid() %>%
+  st_transform(4326)
+
+
+# ---------------------------------------------------------
+# 3. Excluded districts
+# ---------------------------------------------------------
+
+excluded_sample_map <- aze_sample_map %>%
+  filter(
+    Name_AZ %in% excluded_districts
+  )
+
+
+# ---------------------------------------------------------
+# 4. National outline
+# ---------------------------------------------------------
+
+aze_outline <- aze_sample_map %>%
+  summarise()
+
+
+# ---------------------------------------------------------
+# 5. Create figure
+# ---------------------------------------------------------
+
+eligible_pixels_figure <- ggplot() +
+
+  # Administrative districts
+  geom_sf(
+    data = aze_sample_map,
+    fill = "white",
+    color = "grey75",
+    linewidth = 0.15
+  ) +
+
+  # Excluded districts
+  geom_sf(
+    data = excluded_sample_map,
+    fill = "grey80",
+    color = "grey50",
+    linewidth = 0.20
+  ) +
+
+  # Eligible pixels
+  geom_point(
+    data = eligible_pixels,
+    aes(
+      x = x,
+      y = y
+    ),
+    size = 0.18,
+    alpha = 0.70
+  ) +
+
+  # National border
+  geom_sf(
+    data = aze_outline,
+    fill = NA,
+    color = "black",
+    linewidth = 0.45
+  ) +
+
+  labs(
+    title = "Spatial Distribution of Pixels in the Final Analysis Sample",
+    subtitle = "Nighttime light pixels satisfying the sample-selection criteria, 2013–2020"
+  ) +
+
+  coord_sf(
+    datum = NA
+  ) +
+
+  theme_minimal(
+    base_size = 11
+  ) +
+
+  theme(
+    panel.grid = element_blank(),
+
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+
+    plot.title = element_text(
+      face = "bold",
+      size = 14,
+      hjust = 0.5
+    ),
+
+    plot.subtitle = element_text(
+      size = 10,
+      hjust = 0.5
+    ),
+
+    plot.margin = margin(
+      10, 10, 10, 10
+    )
+  )
+
+
+# ---------------------------------------------------------
+# 6. Display
+# ---------------------------------------------------------
+
+eligible_pixels_figure
+
+
+# ---------------------------------------------------------
+# 7. Save for thesis
+# ---------------------------------------------------------
+
+dir.create(
+  here("Figures"),
+  showWarnings = FALSE
+)
+
+ggsave(
+  filename = here(
+    "Figures",
+    "final_analysis_sample_pixels.png"
+  ),
+  plot = eligible_pixels_figure,
+  width = 20,
+  height = 13,
+  units = "cm",
+  dpi = 300,
+  bg = "white"
+)
 ```
 
